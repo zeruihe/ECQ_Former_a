@@ -3,6 +3,7 @@ import torch.nn as nn
 from transformers import CLIPVisionModel, CLIPImageProcessor
 
 # CLIP(VIT-L/14) : 通用语义锚点
+# openai/clip-vit-large-patch14 
 class CLIPEncoder(nn.Module):
     def __init__(self, model_name: str = "openai/clip-vit-large-patch14", freeze: bool = True):
         super().__init__()

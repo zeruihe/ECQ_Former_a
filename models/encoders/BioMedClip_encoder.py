@@ -3,6 +3,7 @@ import torch.nn as nn
 from transformers import CLIPVisionModel, CLIPImageProcessor, AutoModel
 
 # BioMedClip : 医学领域专家
+# microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224
 class BioMedCLIPEncoder(nn.Module):
     def __init__(self, model_name: str = "microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224", freeze: bool = True):
         super().__init__()

@@ -3,8 +3,9 @@ import torch.nn as nn
 from transformers import AutoModel, AutoImageProcessor, BitImageProcessor
 
 # DINOv2 : 细粒度结构专家
+# facebook/dinov2-large ViT-Large / Patch 14
 class DinoV2Encoder(nn.Module):
-    def __init__(self, model_name: str = "facebook/dinov2-base", freeze: bool = True):
+    def __init__(self, model_name: str = "facebook/dinov2-large", freeze: bool = True):
         super().__init__()
         print(f"Loading DINOv2 Model: {model_name}")
         self.vision_tower = AutoModel.from_pretrained(model_name)
