@@ -6,15 +6,7 @@ data:
   pin_memory: true
 
   sources:
-    - name: mimic_cxr
-      root: "/root/autodl-tmp"  # 与标注中的 image 相对路径拼接的根目录
-      ann:
-        train: "/root/autodl-tmp/mimic_cxr/mimic_cxr_train.json"
-        valid: "/root/autodl-tmp/mimic_cxr/mimic_cxr_val.json"
-        test:  "/root/autodl-tmp/mimic_cxr/mimic_cxr_test.json"
-      image_key: "image"
-      text_key: "caption"
-      id_key: null
+    
 
     - name: rocov2
       root: "/root/autodl-tmp"
