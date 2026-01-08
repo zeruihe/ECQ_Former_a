@@ -7,21 +7,21 @@ data:
 
   sources:
     - name: mimic_cxr
-      root: "/data"  # 与标注中的 image 相对路径拼接的根目录
+      root: "/root/autodl-tmp"  # 与标注中的 image 相对路径拼接的根目录
       ann:
-        train: "/data/mimic_cxr/train.json"
-        valid: "/data/mimic_cxr/valid.json"
-        test:  "/data/mimic_cxr/test.json"
+        train: "mimic_cxr/mimic_cxr_train.json"
+        valid: "mimic_cxr/mimic_cxr_val.json"
+        test:  "mimic_cxr/mimic_cxr_test.json"
       image_key: "image"
       text_key: "caption"
       id_key: null
 
     - name: rocov2
-      root: "/data"
+      root: "/root/autodl-tmp"
       ann:
-        train: "/data/rocov2/train.json"
-        valid: "/data/rocov2/valid.json"
-        test:  "/data/rocov2/test.json"
+        train: "rocov2/caption_rocov2_train.json"
+        valid: "rocov2/caption_rocov2_val.json"
+        test:  "rocov2/caption_rocov2_test.json"
       image_key: "image"
       text_key: "caption"
       id_key: "image_id"
