@@ -26,9 +26,9 @@ data:
     - name: rocov2
       root: /root/autodl-tmp
       ann:
-        train: /root/autodl-tmp/rocov2/train.json
-        valid: /root/autodl-tmp/rocov2/valid.json
-        test:  /root/autodl-tmp/rocov2/test.json
+        train: /root/autodl-tmp/rocov2/caption_rocov2_train.json
+        valid: /root/autodl-tmp/rocov2/caption_rocov2_val.json
+        test:  /root/autodl-tmp/rocov2/caption_rocov2_test.json
       image_key: image
       text_key: caption
       id_key: image_id
@@ -36,9 +36,9 @@ data:
     - name: mimic_cxr
       root: /root/autodl-tmp
       ann:
-        train: /root/autodl-tmp/mimic_cxr/train.json
-        valid: /root/autodl-tmp/mimic_cxr/valid.json
-        test:  /root/autodl-tmp/mimic_cxr/test.json
+        train: /root/autodl-tmp/mimic_cxr/mimic_cxr_train.json
+        valid: /root/autodl-tmp/mimic_cxr/mimic_cxr_val.json
+        test:  /root/autodl-tmp/mimic_cxr/mimic_cxr_test.json
       image_key: image
       text_key: caption
       id_key: null
