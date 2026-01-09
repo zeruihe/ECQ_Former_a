@@ -1,5 +1,3 @@
-from .clip_encoder import CLIPEncoder
-from .dinov2_encoder import DinoV2Encoder
-from .BioMedClip_encoder import BioMedCLIPEncoder
+from .hf_vision_encoder_offline import HFVisionEncoderOffline, VisionTokens
 
-__all__ = ["CLIPEncoder", "DinoV2Encoder", "BioMedCLIPEncoder"]
+__all__ = ["HFVisionEncoderOffline", "VisionTokens"]
