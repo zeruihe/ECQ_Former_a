@@ -1,10 +1,10 @@
 # train_m1_pretrain_caption_offline.py
+from __future__ import annotations
 import os, sys
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from __future__ import annotations
 import time
 import yaml
 import torch
