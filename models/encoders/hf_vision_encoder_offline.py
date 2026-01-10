@@ -53,25 +53,32 @@ class HFVisionEncoderOffline(nn.Module):
         self.model.eval()
 
     @torch.inference_mode()
-    def forward(self, images_pil: List[Image.Image], device: torch.device) -> VisionTokens:
-        inputs = self.processor(images=images_pil, return_tensors="pt")
-        inputs = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in inputs.items()}
+def forward(self, images_pil: List[Image.Image], device: torch.device) -> VisionTokens:
+    inputs = self.processor(images=images_pil, return_tensors="pt")
+    inputs = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in inputs.items()}
 
-        pixel_values = inputs.get("pixel_values", None)
+    pixel_values = inputs.get("pixel_values", None)
 
-        # CLIPModel-like: has vision_model
-        if hasattr(self.model, "vision_model") and pixel_values is not None:
-            out = self.model.vision_model(pixel_values=pixel_values, return_dict=True)
-            tokens = out.last_hidden_state
-            return VisionTokens(tokens=tokens)
-
-        # ViT/DINOv2-like
-        if pixel_values is not None:
-            out = self.model(pixel_values=pixel_values, return_dict=True)
-            tokens = getattr(out, "last_hidden_state", None) or out[0]
-            return VisionTokens(tokens=tokens)
-
-        # fallback
-        out = self.model(**inputs, return_dict=True)
-        tokens = getattr(out, "last_hidden_state", None) or out[0]
+    # CLIP-like: has vision_model; internal module may NOT accept return_dict
+    if hasattr(self.model, "vision_model") and pixel_values is not None:
+        out = self.model.vision_model(pixel_values=pixel_values)  # no return_dict
+        tokens = getattr(out, "last_hidden_state", None)
+        if tokens is None:
+            # tuple fallback
+            tokens = out[0]
         return VisionTokens(tokens=tokens)
+
+    # ViT/DINOv2-like
+    if pixel_values is not None:
+        out = self.model(pixel_values=pixel_values)  # no return_dict
+        tokens = getattr(out, "last_hidden_state", None)
+        if tokens is None:
+            tokens = out[0]
+        return VisionTokens(tokens=tokens)
+
+    # fallback for unusual processors
+    out = self.model(**inputs)
+    tokens = getattr(out, "last_hidden_state", None)
+    if tokens is None:
+        tokens = out[0]
+    return VisionTokens(tokens=tokens)
