@@ -217,6 +217,18 @@ def main(config_path: str = "configs/m1.yaml"):
                 )
             rotate_checkpoints(ckpt_dir, keep_last_k)
             print(f"[ckpt] saved: {ckpt_path}")
+            # 强制保存最后一次的检查点
+            final_path = os.path.join(ckpt_dir, "final.pt")
+            save_checkpoint(
+                ckpt_path=final_path,
+                model_trainable_state=model.trainable_state_dict(),
+                optimizer_state=optim.state_dict(),
+                scaler_state=(scaler.state_dict() if use_fp16 else None),
+                step=max_steps - 1,
+                config=cfg,
+                extra={"avg_loss": running / (max_steps - start_step)},
+            )
+            print(f"[ckpt] saved: {final_path}")
 
     dt = time.time() - t0
     print(f"[M1] done. time={dt/60:.1f} min, steps={max_steps-start_step}")
