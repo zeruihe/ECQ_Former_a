@@ -8,6 +8,7 @@ import torch.nn as nn
 from PIL import Image
 
 from transformers import AutoModel, AutoImageProcessor, AutoProcessor
+from transformers import PreTrainedTokenizerBase, CLIPImageProcessor
 
 
 @dataclass
@@ -29,10 +30,36 @@ class HFVisionEncoderOffline(nn.Module):
         self.torch_dtype = torch_dtype
 
         # processor
+        # processor (prefer image processor)
+        self.processor = None
+        proc_err = None
+
+        # 1) try AutoImageProcessor first
         try:
             self.processor = AutoImageProcessor.from_pretrained(local_dir, local_files_only=True)
-        except Exception:
-            self.processor = AutoProcessor.from_pretrained(local_dir, local_files_only=True)
+        except Exception as e:
+            proc_err = e
+
+        # 2) fallback to AutoProcessor
+        if self.processor is None:
+            try:
+                self.processor = AutoProcessor.from_pretrained(local_dir, local_files_only=True)
+            except Exception as e:
+                proc_err = e
+
+        if self.processor is None:
+            raise RuntimeError(f"Failed to load processor from {local_dir}: {proc_err}")
+
+        # 3) If it resolves to a tokenizer (text-only), force an image processor.
+        #    This happens for some CLIP/OpenCLIP-derived repos (e.g., BiomedCLIP).
+        if isinstance(self.processor, PreTrainedTokenizerBase):
+            try:
+                self.processor = CLIPImageProcessor.from_pretrained(local_dir, local_files_only=True)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Processor for {local_dir} is a tokenizer, and CLIPImageProcessor load failed: {e}\n"
+                    "Please ensure the repo directory contains preprocessor_config.json / image processor files."
+                )
 
         # model
         self.model = AutoModel.from_pretrained(
