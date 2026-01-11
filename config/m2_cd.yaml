@@ -1,0 +1,71 @@
+models:
+  llama_dir: /root/autodl-tmp/hf_models/TsinghuaC3I/Llama-3.1-8B-UltraMedical
+  clip_dir: /root/autodl-tmp/hf_models/openai/clip-vit-large-patch14
+  dinov2_dir: /root/autodl-tmp/hf_models/facebook/dinov2-large
+  biomedclip_dir: /root/autodl-tmp/hf_models/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224
+
+  d_bridge: 768
+  meq_layers: 2
+  meq_heads: 12
+  m_queries: 96
+
+  # Step C/D switches
+  attn_type: param_free          # standard | param_free
+  phi: silu                      # identity | relu | silu
+  score_scale: true              # divide by sqrt(D)
+  score_norm: false              # optional stabilization norm
+
+  adaptive_drop:
+    enabled: true
+    gamma: 0.2                   # {0,0.1,0.2,0.3,0.4}
+    mode: topk                   # topk | sort
+    post: no_softmax             # no_softmax | softmax
+
+data:
+  split: train
+  return_pil: true
+  pin_memory: true
+  shuffle: true
+  num_workers: 4
+  batch_size: 1
+  sources:
+    - name: rocov2
+      root: /root/autodl-tmp
+      ann:
+        train: /root/autodl-tmp/rocov2/caption_rocov2_train.json
+        valid: /root/autodl-tmp/rocov2/caption_rocov2_val.json
+        test:  /root/autodl-tmp/rocov2/caption_rocov2_test.json
+      image_key: image
+      text_key: caption
+      id_key: image_id
+
+    - name: mimic_cxr
+      root: /root/autodl-tmp
+      ann:
+        train: /root/autodl-tmp/mimic_cxr/mimic_cxr_train.json
+        valid: /root/autodl-tmp/mimic_cxr/mimic_cxr_val.json
+        test:  /root/autodl-tmp/mimic_cxr/mimic_cxr_test.json
+      image_key: image
+      text_key: caption
+      id_key: null
+
+train:
+  seed: 3407
+  max_steps: 2000
+  grad_accum: 8
+  lr: 1.0e-4
+  weight_decay: 0.01
+  max_length: 256
+  prompt_prefix: "Describe the medical image:\n"
+  bf16: true
+  fp16: false
+  log_every: 10
+  save_every: 200
+  keep_last_k: 3
+  save_latest: true
+  auto_resume: true
+  resume_from: null
+
+output:
+  out_dir: /root/autodl-tmp/outputs
+  run_name: m2_cd_roco_mimic
