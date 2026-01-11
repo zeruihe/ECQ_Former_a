@@ -31,6 +31,7 @@ class ECQFormerM1Offline(nn.Module):
         torch_dtype=torch.bfloat16,
     ):
         super().__init__()
+        self.torch_dtype = torch_dtype
 
         # LM (frozen)
         self.lm = FrozenLlamaWithSoftPromptOffline(llama_local_dir, torch_dtype=torch_dtype)
@@ -53,6 +54,13 @@ class ECQFormerM1Offline(nn.Module):
 
         # soft prompt projector -> LM embedding dim
         self.soft_proj = nn.Linear(d_bridge, self.lm.embed_dim, bias=True)
+
+        # 将可训练模块转换为正确的 dtype
+        self.proj_clip = self.proj_clip.to(torch_dtype)
+        self.proj_dino = self.proj_dino.to(torch_dtype)
+        self.proj_bio = self.proj_bio.to(torch_dtype)
+        self.meq = self.meq.to(torch_dtype)
+        self.soft_proj = self.soft_proj.to(torch_dtype)
 
     def encode_vision(self, images_pil: List[Image.Image], device: torch.device) -> torch.Tensor:
         # encoders are inference_mode; output dtype likely bf16/fp16 depending on torch_dtype
