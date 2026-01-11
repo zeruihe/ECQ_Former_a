@@ -92,6 +92,9 @@ class FrozenLlamaWithSoftPromptOffline(nn.Module):
         prompts: List[str],
         device: torch.device,
         max_new_tokens: int = 64,
+        num_beams: int = 1,
+        temperature: float = 0.7,
+        top_p: float = 0.95,
     ) -> List[str]:
         tok = self.tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(device)
         text_emb = self.model.get_input_embeddings()(tok["input_ids"])
@@ -101,10 +104,27 @@ class FrozenLlamaWithSoftPromptOffline(nn.Module):
         soft_mask = torch.ones((B, M), dtype=tok["attention_mask"].dtype, device=device)
         attn_mask = torch.cat([soft_mask, tok["attention_mask"]], dim=1)
 
+        # 根据参数决定采样策略
+        do_sample = (num_beams == 1)
+        
         gen = self.model.generate(
             inputs_embeds=inputs_embeds,
             attention_mask=attn_mask,
             max_new_tokens=max_new_tokens,
-            do_sample=False,
+            num_beams=num_beams,
+            do_sample=do_sample,
+            temperature=temperature if do_sample else 1.0,
+            top_p=top_p if do_sample else 1.0,
+            eos_token_id=self.tokenizer.eos_token_id,
+            pad_token_id=self.tokenizer.eos_token_id,
         )
-        return self.tokenizer.batch_decode(gen, skip_special_tokens=True)
+        
+        # 解码并去除 prompt 前缀
+        texts = self.tokenizer.batch_decode(gen, skip_special_tokens=True)
+        outs = []
+        for i, t in enumerate(texts):
+            prompt_prefix = prompts[i] if i < len(prompts) else ""
+            if prompt_prefix and prompt_prefix in t:
+                t = t.split(prompt_prefix, 1)[-1].strip()
+            outs.append(t.strip())
+        return outs

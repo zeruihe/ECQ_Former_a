@@ -91,20 +91,45 @@ class ECQFormerM1Offline(nn.Module):
         )
         return out.loss
 
-    @torch.no_grad()
+    @torch.inference_mode()
+    def build_soft_prompt(self, images_pil: List[Image.Image], device: torch.device) -> torch.Tensor:
+        """
+        构建 soft prompt: image -> vision tokens -> MEQ resample -> project to LLM dim
+        Returns: (B, M, D_lm)
+        """
+        x_v = self.encode_vision(images_pil, device=device)
+        z = self.meq(x_v).z
+        soft = self.soft_proj(z)
+        return soft
+
+    @torch.inference_mode()
     def generate_caption(
         self,
         *,
         images_pil: List[Image.Image],
-        device: torch.device,
+        device: torch.device = None,
         prompt_prefix: str = "Describe the medical image:\n",
         max_new_tokens: int = 64,
+        num_beams: int = 1,
+        temperature: float = 0.7,
+        top_p: float = 0.95,
     ) -> List[str]:
-        x_v = self.encode_vision(images_pil, device=device)
-        z = self.meq(x_v).z
-        soft = self.soft_proj(z)
+        # 自动获取设备
+        if device is None:
+            device = next(self.parameters()).device
+        
+        soft = self.build_soft_prompt(images_pil, device=device)
         prompts = [prompt_prefix for _ in images_pil]
-        return self.lm.generate_with_soft_prompt(soft, prompts, device=device, max_new_tokens=max_new_tokens)
+        
+        return self.lm.generate_with_soft_prompt(
+            soft_prompt=soft,
+            prompts=prompts,
+            device=device,
+            max_new_tokens=max_new_tokens,
+            num_beams=num_beams,
+            temperature=temperature,
+            top_p=top_p,
+        )
 
      # --- trainable-only checkpoint helpers ---
     def trainable_state_dict(self) -> dict:
