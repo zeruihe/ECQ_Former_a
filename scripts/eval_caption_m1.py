@@ -154,21 +154,51 @@ def compute_bertscore(
         print("[warn] bert-score not installed, skipping BERTScore")
         return {"precision": None, "recall": None, "f1": None}
     
-    P, R, F1 = bert_score(
-        cands=preds,
-        refs=refs,
-        model_type=model_path,
-        device=device,
-        lang="en",
-        rescale_with_baseline=True,
-        verbose=False,
-    )
+    # 对于本地路径，需要额外指定 num_layers
+    # roberta-large: 17 layers, roberta-base: 10 layers
+    is_local_path = os.path.isdir(model_path)
     
-    return {
-        "precision": float(P.mean().item()),
-        "recall": float(R.mean().item()),
-        "f1": float(F1.mean().item()),
-    }
+    try:
+        if is_local_path:
+            # 本地路径需要指定 num_layers
+            # 检测是否是 roberta-large
+            if "roberta-large" in model_path.lower():
+                num_layers = 17
+            elif "roberta-base" in model_path.lower():
+                num_layers = 10
+            else:
+                num_layers = 17  # 默认使用 large 的层数
+            
+            P, R, F1 = bert_score(
+                cands=preds,
+                refs=refs,
+                model_type=model_path,
+                num_layers=num_layers,
+                device=device,
+                lang="en",
+                rescale_with_baseline=False,  # 本地模式不使用基线（避免网络请求）
+                verbose=False,
+            )
+        else:
+            # 在线模型名称
+            P, R, F1 = bert_score(
+                cands=preds,
+                refs=refs,
+                model_type=model_path,
+                device=device,
+                lang="en",
+                rescale_with_baseline=True,
+                verbose=False,
+            )
+        
+        return {
+            "precision": float(P.mean().item()),
+            "recall": float(R.mean().item()),
+            "f1": float(F1.mean().item()),
+        }
+    except Exception as e:
+        print(f"[warn] BERTScore failed: {e}")
+        return {"precision": None, "recall": None, "f1": None}
 
 
 @torch.inference_mode()
