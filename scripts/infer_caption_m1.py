@@ -41,7 +41,7 @@ def _find_latest_ckpt(ckpt_dir: str) -> Optional[str]:
 
 
 def _load_trainable_state(model: torch.nn.Module, ckpt_path: str) -> None:
-    ckpt = torch.load(ckpt_path, map_location="cpu")
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
     # Support multiple key conventions
     cand_keys = [
