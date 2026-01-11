@@ -41,32 +41,48 @@ def _find_latest_ckpt(ckpt_dir: str) -> Optional[str]:
 
 
 def _load_trainable_state(model: torch.nn.Module, ckpt_path: str) -> None:
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    # PyTorch 2.6+: torch.load defaults weights_only=True, may fail for our ckpt dict.
+    # We trust our own checkpoints -> load with weights_only=False.
+    try:
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    except TypeError:
+        ckpt = torch.load(ckpt_path, map_location="cpu")
 
-    # Support multiple key conventions
+    if not isinstance(ckpt, dict):
+        raise TypeError(f"Checkpoint is not a dict: type={type(ckpt)}")
+
+    # Support your training script key names:
     cand_keys = [
+        "model_trainable",        # <-- your current checkpoint key
         "model_trainable_state",
         "trainable_state",
         "model_state",
         "model",
         "state_dict",
     ]
+
     state = None
     for k in cand_keys:
         if k in ckpt and isinstance(ckpt[k], dict):
             state = ckpt[k]
             break
-    if state is None and isinstance(ckpt, dict) and all(isinstance(v, torch.Tensor) for v in ckpt.values()):
+
+    # if checkpoint itself is a state_dict
+    if state is None and all(isinstance(v, torch.Tensor) for v in ckpt.values()):
         state = ckpt
 
     if state is None:
-        raise KeyError(f"Cannot find model state in checkpoint: {ckpt_path}. keys={list(ckpt.keys())[:30]}")
+        raise KeyError(
+            f"Cannot find model state in checkpoint: {ckpt_path}. "
+            f"keys={list(ckpt.keys())}"
+        )
 
     missing, unexpected = model.load_state_dict(state, strict=False)
     if missing:
         print(f"[warn] missing keys (strict=False): {len(missing)}")
     if unexpected:
         print(f"[warn] unexpected keys (strict=False): {len(unexpected)}")
+
 
 
 @torch.inference_mode()
