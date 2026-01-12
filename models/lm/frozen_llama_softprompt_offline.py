@@ -95,6 +95,9 @@ class FrozenLlamaWithSoftPromptOffline(nn.Module):
         num_beams: int = 1,
         temperature: float = 0.7,
         top_p: float = 0.95,
+        no_repeat_ngram_size: int = 0,
+        repetition_penalty: float = 1.0,
+        early_stopping: bool = False,
     ) -> List[str]:
         tok = self.tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(device)
         text_emb = self.model.get_input_embeddings()(tok["input_ids"])
@@ -115,6 +118,9 @@ class FrozenLlamaWithSoftPromptOffline(nn.Module):
             do_sample=do_sample,
             temperature=temperature if do_sample else 1.0,
             top_p=top_p if do_sample else 1.0,
+            no_repeat_ngram_size=no_repeat_ngram_size,
+            repetition_penalty=repetition_penalty,
+            early_stopping=early_stopping if num_beams > 1 else False,
             eos_token_id=self.tokenizer.eos_token_id,
             pad_token_id=self.tokenizer.eos_token_id,
         )
@@ -128,3 +134,61 @@ class FrozenLlamaWithSoftPromptOffline(nn.Module):
                 t = t.split(prompt_prefix, 1)[-1].strip()
             outs.append(t.strip())
         return outs
+
+    @torch.no_grad()
+    def generate_with_soft_prompt_and_count(
+        self,
+        soft_prompt: torch.Tensor,
+        prompts: List[str],
+        device: torch.device,
+        max_new_tokens: int = 64,
+        num_beams: int = 1,
+        temperature: float = 0.7,
+        top_p: float = 0.95,
+        no_repeat_ngram_size: int = 0,
+        repetition_penalty: float = 1.0,
+        early_stopping: bool = False,
+    ) -> Tuple[List[str], int]:
+        """
+        与 generate_with_soft_prompt 相同，但额外返回生成的 token 数量。
+        Returns: (captions, num_generated_tokens)
+        """
+        tok = self.tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(device)
+        text_emb = self.model.get_input_embeddings()(tok["input_ids"])
+        inputs_embeds = torch.cat([soft_prompt, text_emb], dim=1)
+
+        B, M, _ = soft_prompt.shape
+        soft_mask = torch.ones((B, M), dtype=tok["attention_mask"].dtype, device=device)
+        attn_mask = torch.cat([soft_mask, tok["attention_mask"]], dim=1)
+
+        do_sample = (num_beams == 1)
+        
+        gen = self.model.generate(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attn_mask,
+            max_new_tokens=max_new_tokens,
+            num_beams=num_beams,
+            do_sample=do_sample,
+            temperature=temperature if do_sample else 1.0,
+            top_p=top_p if do_sample else 1.0,
+            no_repeat_ngram_size=no_repeat_ngram_size,
+            repetition_penalty=repetition_penalty,
+            early_stopping=early_stopping if num_beams > 1 else False,
+            eos_token_id=self.tokenizer.eos_token_id,
+            pad_token_id=self.tokenizer.eos_token_id,
+        )
+        
+        # 计算生成的 token 数（不含输入部分）
+        input_len = inputs_embeds.shape[1]
+        num_generated_tokens = max(0, gen.shape[1] - input_len)
+        
+        # 解码
+        texts = self.tokenizer.batch_decode(gen, skip_special_tokens=True)
+        outs = []
+        for i, t in enumerate(texts):
+            prompt_prefix = prompts[i] if i < len(prompts) else ""
+            if prompt_prefix and prompt_prefix in t:
+                t = t.split(prompt_prefix, 1)[-1].strip()
+            outs.append(t.strip())
+        
+        return outs, num_generated_tokens

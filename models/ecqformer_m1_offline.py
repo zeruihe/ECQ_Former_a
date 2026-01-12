@@ -121,6 +121,9 @@ class ECQFormerM1Offline(nn.Module):
         num_beams: int = 1,
         temperature: float = 0.7,
         top_p: float = 0.95,
+        no_repeat_ngram_size: int = 0,
+        repetition_penalty: float = 1.0,
+        early_stopping: bool = False,
     ) -> List[str]:
         # 自动获取设备
         if device is None:
@@ -137,7 +140,87 @@ class ECQFormerM1Offline(nn.Module):
             num_beams=num_beams,
             temperature=temperature,
             top_p=top_p,
+            no_repeat_ngram_size=no_repeat_ngram_size,
+            repetition_penalty=repetition_penalty,
+            early_stopping=early_stopping,
         )
+
+    @torch.inference_mode()
+    def generate_caption_with_timing(
+        self,
+        *,
+        images_pil: List[Image.Image],
+        device: torch.device = None,
+        prompt_prefix: str = "Describe the medical image:\n",
+        max_new_tokens: int = 64,
+        num_beams: int = 1,
+        temperature: float = 0.7,
+        top_p: float = 0.95,
+        no_repeat_ngram_size: int = 0,
+        repetition_penalty: float = 1.0,
+        early_stopping: bool = False,
+    ) -> tuple:
+        """
+        生成描述并返回详细计时信息。
+        Returns: (captions, timing_dict)
+            timing_dict: {
+                "vision_bridge_ms": float,  # encode_vision + meq + soft_proj 时间
+                "decode_ms": float,         # LM generate 时间
+                "num_tokens": int,          # 生成的 token 数
+                "tokens_per_s": float,      # 生成速度
+            }
+        """
+        import time
+        
+        if device is None:
+            device = next(self.parameters()).device
+        
+        # 1) Vision + Bridge timing
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        t0 = time.time()
+        
+        soft = self.build_soft_prompt(images_pil, device=device)
+        
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        t_vision_bridge = time.time() - t0
+        
+        # 2) Decode timing
+        prompts = [prompt_prefix for _ in images_pil]
+        
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        t1 = time.time()
+        
+        captions, num_tokens = self.lm.generate_with_soft_prompt_and_count(
+            soft_prompt=soft,
+            prompts=prompts,
+            device=device,
+            max_new_tokens=max_new_tokens,
+            num_beams=num_beams,
+            temperature=temperature,
+            top_p=top_p,
+            no_repeat_ngram_size=no_repeat_ngram_size,
+            repetition_penalty=repetition_penalty,
+            early_stopping=early_stopping,
+        )
+        
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        t_decode = time.time() - t1
+        
+        # 计算 tokens per second
+        tokens_per_s = num_tokens / t_decode if t_decode > 0 else 0.0
+        
+        timing = {
+            "vision_bridge_ms": t_vision_bridge * 1000,
+            "decode_ms": t_decode * 1000,
+            "num_tokens": num_tokens,
+            "tokens_per_s": tokens_per_s,
+        }
+        
+        return captions, timing
 
      # --- trainable-only checkpoint helpers ---
     def trainable_state_dict(self) -> dict:

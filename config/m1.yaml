@@ -66,6 +66,16 @@ train:
   auto_resume: true        # 若 out_dir/run_name/checkpoints/latest.pt 存在则自动续训
   resume_from: null        # 手动指定某个 ckpt 路径则优先
 
+# 评估/推理时的解码参数（统一口径，方便不同阶段对比）
+eval:
+  max_new_tokens: 32
+  num_beams: 1
+  temperature: 0.7
+  top_p: 0.95
+  no_repeat_ngram_size: 3
+  repetition_penalty: 1.15
+  early_stopping: true
+
 output:
   out_dir: /root/autodl-tmp/outputs
   run_name: m1_roco_mimic_base

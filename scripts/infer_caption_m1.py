@@ -121,10 +121,14 @@ def main():
     parser.add_argument("--split", type=str, default="valid", choices=["valid", "test"])
     parser.add_argument("--num_samples", type=int, default=50, help="采样数量")
     parser.add_argument("--seed", type=int, default=3407)
-    parser.add_argument("--max_new_tokens", type=int, default=64)
-    parser.add_argument("--num_beams", type=int, default=1)
-    parser.add_argument("--temperature", type=float, default=0.7)
-    parser.add_argument("--top_p", type=float, default=0.95)
+    # 以下参数优先使用配置文件中的值，命令行可覆盖
+    parser.add_argument("--max_new_tokens", type=int, default=None)
+    parser.add_argument("--num_beams", type=int, default=None)
+    parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--top_p", type=float, default=None)
+    parser.add_argument("--no_repeat_ngram_size", type=int, default=None)
+    parser.add_argument("--repetition_penalty", type=float, default=None)
+    parser.add_argument("--early_stopping", action="store_true", default=None)
     args = parser.parse_args()
 
     # 设置离线模式
@@ -137,6 +141,19 @@ def main():
 
     # 加载配置
     cfg = load_config(args.config)
+    
+    # 读取 eval 配置（命令行参数覆盖配置文件）
+    eval_cfg = cfg.get("eval", {})
+    gen_params = {
+        "max_new_tokens": args.max_new_tokens if args.max_new_tokens is not None else eval_cfg.get("max_new_tokens", 32),
+        "num_beams": args.num_beams if args.num_beams is not None else eval_cfg.get("num_beams", 1),
+        "temperature": args.temperature if args.temperature is not None else eval_cfg.get("temperature", 0.7),
+        "top_p": args.top_p if args.top_p is not None else eval_cfg.get("top_p", 0.95),
+        "no_repeat_ngram_size": args.no_repeat_ngram_size if args.no_repeat_ngram_size is not None else eval_cfg.get("no_repeat_ngram_size", 3),
+        "repetition_penalty": args.repetition_penalty if args.repetition_penalty is not None else eval_cfg.get("repetition_penalty", 1.15),
+        "early_stopping": args.early_stopping if args.early_stopping is not None else eval_cfg.get("early_stopping", True),
+    }
+    print(f"[infer] generation params: {gen_params}")
     
     # 输出目录
     out_dir = os.path.join(cfg["output"]["out_dir"], cfg["output"]["run_name"])
@@ -206,10 +223,13 @@ def main():
             images_pil=images_pil,
             device=device,
             prompt_prefix=prompt_prefix,
-            max_new_tokens=args.max_new_tokens,
-            num_beams=args.num_beams,
-            temperature=args.temperature,
-            top_p=args.top_p,
+            max_new_tokens=gen_params["max_new_tokens"],
+            num_beams=gen_params["num_beams"],
+            temperature=gen_params["temperature"],
+            top_p=gen_params["top_p"],
+            no_repeat_ngram_size=gen_params["no_repeat_ngram_size"],
+            repetition_penalty=gen_params["repetition_penalty"],
+            early_stopping=gen_params["early_stopping"],
         )[0]
         gen_time_ms = (time.time() - t_gen) * 1000
         

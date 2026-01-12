@@ -23,8 +23,9 @@ if PROJECT_ROOT not in sys.path:
 import torch
 import yaml
 
-from data import build_caption_loader
+from data import build_caption_dataset
 from data.schema import DataSourceCfg, AnnSplitCfg
+from data.collate import PretrainCaptionCollator
 from models.ecqformer_m1_offline import ECQFormerM1Offline
 
 
@@ -51,6 +52,45 @@ def build_sources(cfg_sources: List[Dict]) -> List[DataSourceCfg]:
             )
         )
     return sources
+
+
+def build_balanced_subset(
+    concat_ds,
+    total_samples: int,
+    seed: int = 42,
+) -> torch.utils.data.Subset:
+    """
+    从 ConcatCaptionDataset 中按数据源均匀采样。
+    每个数据源抽取 total_samples // num_sources 条样本。
+    """
+    import random
+    random.seed(seed)
+    
+    # 计算每个子数据集的区间
+    num_sources = len(concat_ds.datasets)
+    samples_per_source = total_samples // num_sources
+    
+    all_indices = []
+    prev_cum = 0
+    
+    for i, ds in enumerate(concat_ds.datasets):
+        ds_len = len(ds)
+        # 全局索引区间: [prev_cum, cum[i])
+        global_start = prev_cum
+        global_end = concat_ds.cum[i]
+        
+        # 从该数据源随机抽取
+        ds_indices = list(range(global_start, global_end))
+        k = min(samples_per_source, len(ds_indices))
+        sampled = random.sample(ds_indices, k)
+        all_indices.extend(sampled)
+        
+        prev_cum = global_end
+    
+    # 打乱最终顺序以避免数据源顺序偏差
+    random.shuffle(all_indices)
+    
+    return torch.utils.data.Subset(concat_ds, all_indices)
 
 
 def find_checkpoint(ckpt_dir: str) -> Optional[str]:
@@ -208,10 +248,14 @@ def main():
     parser.add_argument("--ckpt", type=str, default=None, help="检查点路径")
     parser.add_argument("--split", type=str, default="valid", choices=["valid", "test"])
     parser.add_argument("--max_eval", type=int, default=500, help="最大评估样本数")
-    parser.add_argument("--max_new_tokens", type=int, default=64)
-    parser.add_argument("--num_beams", type=int, default=1)
-    parser.add_argument("--temperature", type=float, default=0.7)
-    parser.add_argument("--top_p", type=float, default=0.95)
+    # 以下参数优先使用配置文件中的值，命令行可覆盖
+    parser.add_argument("--max_new_tokens", type=int, default=None)
+    parser.add_argument("--num_beams", type=int, default=None)
+    parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--top_p", type=float, default=None)
+    parser.add_argument("--no_repeat_ngram_size", type=int, default=None)
+    parser.add_argument("--repetition_penalty", type=float, default=None)
+    parser.add_argument("--early_stopping", action="store_true", default=None)
     parser.add_argument("--bertscore_model", type=str, default=None, 
                         help="BERTScore 模型路径（如 /path/to/roberta-large）")
     parser.add_argument("--save_preds", action="store_true", help="保存预测结果")
@@ -223,6 +267,19 @@ def main():
 
     # 加载配置
     cfg = load_config(args.config)
+    
+    # 读取 eval 配置（命令行参数覆盖配置文件）
+    eval_cfg = cfg.get("eval", {})
+    gen_params = {
+        "max_new_tokens": args.max_new_tokens if args.max_new_tokens is not None else eval_cfg.get("max_new_tokens", 32),
+        "num_beams": args.num_beams if args.num_beams is not None else eval_cfg.get("num_beams", 1),
+        "temperature": args.temperature if args.temperature is not None else eval_cfg.get("temperature", 0.7),
+        "top_p": args.top_p if args.top_p is not None else eval_cfg.get("top_p", 0.95),
+        "no_repeat_ngram_size": args.no_repeat_ngram_size if args.no_repeat_ngram_size is not None else eval_cfg.get("no_repeat_ngram_size", 3),
+        "repetition_penalty": args.repetition_penalty if args.repetition_penalty is not None else eval_cfg.get("repetition_penalty", 1.15),
+        "early_stopping": args.early_stopping if args.early_stopping is not None else eval_cfg.get("early_stopping", True),
+    }
+    print(f"[eval] generation params: {gen_params}")
     
     # 输出目录
     out_dir = os.path.join(cfg["output"]["out_dir"], cfg["output"]["run_name"])
@@ -263,16 +320,34 @@ def main():
     print(f"[eval] loaded step={step}")
     print(f"[eval] params: total={params['total']/1e6:.2f}M, trainable={params['trainable']/1e6:.2f}M, frozen={params['frozen']/1e6:.2f}M")
 
-    # 构建数据加载器
+    # 构建数据集（按数据源均匀采样）
     sources = build_sources(cfg["data"]["sources"])
-    loader = build_caption_loader(
-        split=args.split,
-        sources=sources,
+    concat_ds = build_caption_dataset(split=args.split, sources=sources)
+    
+    # 打印各数据源信息
+    print(f"[eval] data sources:")
+    prev = 0
+    for i, ds in enumerate(concat_ds.datasets):
+        ds_name = sources[i].name
+        ds_len = concat_ds.cum[i] - prev
+        print(f"  [{i+1}] {ds_name}: {ds_len} samples")
+        prev = concat_ds.cum[i]
+    print(f"  total: {len(concat_ds)} samples")
+    
+    # 按数据源均匀采样
+    eval_seed = cfg.get("eval", {}).get("seed", 42)
+    subset = build_balanced_subset(concat_ds, total_samples=args.max_eval, seed=eval_seed)
+    print(f"[eval] balanced sampling: {len(subset)} samples ({args.max_eval // len(sources)} per source)")
+    
+    # 创建 DataLoader
+    collate = PretrainCaptionCollator(return_pil=True)
+    loader = torch.utils.data.DataLoader(
+        subset,
         batch_size=1,
+        shuffle=False,  # Subset 已打乱
         num_workers=int(cfg["data"].get("num_workers", 4)),
-        return_pil=True,
         pin_memory=True,
-        shuffle=False,  # 评估时不打乱
+        collate_fn=collate,
     )
 
     # 推理
@@ -281,15 +356,18 @@ def main():
     preds: List[str] = []
     refs: List[str] = []
     metas: List[Dict] = []
-    latencies_ms: List[float] = []
+    
+    # 详细计时列表
+    vision_bridge_ms_list: List[float] = []
+    decode_ms_list: List[float] = []
+    tokens_per_s_list: List[float] = []
+    num_tokens_list: List[int] = []
     peak_mems_gb: List[float] = []
     
-    print(f"[eval] evaluating up to {args.max_eval} samples from {args.split}...")
+    print(f"[eval] evaluating {len(subset)} samples from {args.split}...")
     t0 = time.time()
     
     for i, batch in enumerate(loader):
-        if i >= args.max_eval:
-            break
         
         images_pil = batch["images_pil"]
         gt_caption = batch["captions"][0]
@@ -300,23 +378,26 @@ def main():
             torch.cuda.reset_peak_memory_stats(device)
             torch.cuda.synchronize()
         
-        # 生成
-        t_gen = time.time()
-        pred_caption = model.generate_caption(
+        # 生成（带详细计时）
+        pred_list, timing = model.generate_caption_with_timing(
             images_pil=images_pil,
             device=device,
             prompt_prefix=prompt_prefix,
-            max_new_tokens=args.max_new_tokens,
-            num_beams=args.num_beams,
-            temperature=args.temperature,
-            top_p=args.top_p,
-        )[0]
+            max_new_tokens=gen_params["max_new_tokens"],
+            num_beams=gen_params["num_beams"],
+            temperature=gen_params["temperature"],
+            top_p=gen_params["top_p"],
+            no_repeat_ngram_size=gen_params["no_repeat_ngram_size"],
+            repetition_penalty=gen_params["repetition_penalty"],
+            early_stopping=gen_params["early_stopping"],
+        )
+        pred_caption = pred_list[0]
         
-        if device.type == "cuda":
-            torch.cuda.synchronize()
-        
-        latency_ms = (time.time() - t_gen) * 1000
-        latencies_ms.append(latency_ms)
+        # 记录计时
+        vision_bridge_ms_list.append(timing["vision_bridge_ms"])
+        decode_ms_list.append(timing["decode_ms"])
+        tokens_per_s_list.append(timing["tokens_per_s"])
+        num_tokens_list.append(timing["num_tokens"])
         
         # 记录峰值显存
         if device.type == "cuda":
@@ -328,7 +409,10 @@ def main():
         metas.append(meta)
         
         if (i + 1) % 50 == 0:
-            print(f"  [{i+1}/{min(args.max_eval, len(loader))}] lat={latency_ms:.1f}ms")
+            total_ms = timing["vision_bridge_ms"] + timing["decode_ms"]
+            print(f"  [{i+1}/{min(args.max_eval, len(loader))}] "
+                  f"vb={timing['vision_bridge_ms']:.1f}ms dec={timing['decode_ms']:.1f}ms "
+                  f"tok/s={timing['tokens_per_s']:.1f}")
 
     total_time = time.time() - t0
     
@@ -345,8 +429,12 @@ def main():
         device="cuda" if device.type == "cuda" else "cpu"
     )
     
-    # 效率指标
-    avg_latency_ms = sum(latencies_ms) / len(latencies_ms) if latencies_ms else 0
+    # 效率指标 - 详细计时
+    avg_vision_bridge_ms = sum(vision_bridge_ms_list) / len(vision_bridge_ms_list) if vision_bridge_ms_list else 0
+    avg_decode_ms = sum(decode_ms_list) / len(decode_ms_list) if decode_ms_list else 0
+    avg_tokens_per_s = sum(tokens_per_s_list) / len(tokens_per_s_list) if tokens_per_s_list else 0
+    avg_num_tokens = sum(num_tokens_list) / len(num_tokens_list) if num_tokens_list else 0
+    avg_total_latency_ms = avg_vision_bridge_ms + avg_decode_ms
     avg_peak_mem_gb = sum(peak_mems_gb) / len(peak_mems_gb) if peak_mems_gb else None
     
     # 汇总结果
@@ -361,13 +449,22 @@ def main():
         "rouge_l": rouge_scores,
         "bertscore": bertscore_scores,
         
-        # 效率指标
+        # 效率指标 - 详细计时
         "efficiency": {
             "trainable_params": params["trainable"],
             "trainable_params_M": round(params["trainable"] / 1e6, 2),
             "total_params": params["total"],
             "total_params_M": round(params["total"] / 1e6, 2),
-            "avg_latency_ms": round(avg_latency_ms, 2),
+            
+            # 拆分计时
+            "avg_vision_bridge_ms": round(avg_vision_bridge_ms, 2),
+            "avg_decode_ms": round(avg_decode_ms, 2),
+            "avg_total_latency_ms": round(avg_total_latency_ms, 2),
+            
+            # token 生成速度
+            "avg_num_tokens": round(avg_num_tokens, 1),
+            "avg_tokens_per_s": round(avg_tokens_per_s, 2),
+            
             "avg_peak_mem_gb": round(avg_peak_mem_gb, 3) if avg_peak_mem_gb else None,
         },
         
@@ -380,22 +477,26 @@ def main():
         json.dump(metrics, f, ensure_ascii=False, indent=2)
     
     # 打印结果表格
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 65)
     print(f"  ECQFormer-M1 Evaluation Results ({args.split})")
-    print("=" * 60)
+    print("=" * 65)
     print(f"  Checkpoint: {os.path.basename(ckpt_path)} (step {step})")
     print(f"  Samples: {len(preds)}")
-    print("-" * 60)
+    print("-" * 65)
     print("  [Quality Metrics]")
     print(f"    ROUGE-L (F1):    {rouge_scores['f1']:.4f}" if rouge_scores['f1'] else "    ROUGE-L: N/A")
     print(f"    BERTScore (F1):  {bertscore_scores['f1']:.4f}" if bertscore_scores['f1'] else "    BERTScore: N/A")
-    print("-" * 60)
+    print("-" * 65)
     print("  [Efficiency Metrics]")
-    print(f"    Trainable Params: {params['trainable']/1e6:.2f}M")
-    print(f"    Avg Latency:      {avg_latency_ms:.2f}ms")
+    print(f"    Trainable Params:    {params['trainable']/1e6:.2f}M")
+    print(f"    Vision+Bridge Time:  {avg_vision_bridge_ms:.2f}ms")
+    print(f"    Decode Time:         {avg_decode_ms:.2f}ms")
+    print(f"    Total Latency:       {avg_total_latency_ms:.2f}ms")
+    print(f"    Tokens/sec:          {avg_tokens_per_s:.2f}")
+    print(f"    Avg Tokens:          {avg_num_tokens:.1f}")
     if avg_peak_mem_gb:
-        print(f"    Peak Memory:      {avg_peak_mem_gb:.3f}GB")
-    print("=" * 60)
+        print(f"    Peak Memory:         {avg_peak_mem_gb:.3f}GB")
+    print("=" * 65)
     print(f"  Results saved to: {metrics_file}")
     
     # 保存预测结果
