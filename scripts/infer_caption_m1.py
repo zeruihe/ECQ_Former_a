@@ -1,10 +1,10 @@
 # scripts/infer_caption_m1.py
 # -*- coding: utf-8 -*-
 """
-1.1 生成样例脚本
-- 载入 final.pt
-- 从 rocov2/mimic-cxr val/test 抽样 N 条
-- 输出：image_id、GT caption、生成 caption -> outputs/.../samples.jsonl
+M1 推理样例生成脚本
+- 从 config 读取解码参数
+- 按数据源均匀采样（与 eval 脚本一致）
+- 详细计时（vision_bridge_ms, decode_ms, tokens_per_s）
 """
 from __future__ import annotations
 
@@ -24,8 +24,9 @@ if PROJECT_ROOT not in sys.path:
 import torch
 import yaml
 
-from data import build_caption_loader
+from data import build_caption_dataset
 from data.schema import DataSourceCfg, AnnSplitCfg
+from data.collate import PretrainCaptionCollator
 from models.ecqformer_m1_offline import ECQFormerM1Offline
 
 
@@ -54,21 +55,50 @@ def build_sources(cfg_sources: List[Dict]) -> List[DataSourceCfg]:
     return sources
 
 
-def find_checkpoint(ckpt_dir: str, prefer: str = "final") -> Optional[str]:
-    """查找检查点，优先 final.pt"""
+def build_balanced_subset(
+    concat_ds,
+    total_samples: int,
+    seed: int = 42,
+) -> torch.utils.data.Subset:
+    """
+    从 ConcatCaptionDataset 中按数据源均匀采样。
+    每个数据源抽取 total_samples // num_sources 条样本。
+    """
+    random.seed(seed)
+    
+    num_sources = len(concat_ds.datasets)
+    samples_per_source = total_samples // num_sources
+    
+    all_indices = []
+    prev_cum = 0
+    
+    for i, ds in enumerate(concat_ds.datasets):
+        global_start = prev_cum
+        global_end = concat_ds.cum[i]
+        
+        ds_indices = list(range(global_start, global_end))
+        k = min(samples_per_source, len(ds_indices))
+        sampled = random.sample(ds_indices, k)
+        all_indices.extend(sampled)
+        
+        prev_cum = global_end
+    
+    random.shuffle(all_indices)
+    
+    return torch.utils.data.Subset(concat_ds, all_indices)
+
+
+def find_checkpoint(ckpt_dir: str) -> Optional[str]:
     if not os.path.isdir(ckpt_dir):
         return None
     pts = [p for p in os.listdir(ckpt_dir) if p.endswith(".pt")]
     if not pts:
         return None
-    
-    # 优先级: final.pt > latest.pt > 最大 step
     if "final.pt" in pts:
         return os.path.join(ckpt_dir, "final.pt")
     if "latest.pt" in pts:
         return os.path.join(ckpt_dir, "latest.pt")
     
-    # 按 step 排序
     def step_key(name: str) -> int:
         if name.startswith("step_") and name.endswith(".pt"):
             try:
@@ -81,7 +111,6 @@ def find_checkpoint(ckpt_dir: str, prefer: str = "final") -> Optional[str]:
 
 
 def load_checkpoint(model: torch.nn.Module, ckpt_path: str) -> int:
-    """加载检查点，返回训练步数"""
     try:
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     except TypeError:
@@ -90,7 +119,6 @@ def load_checkpoint(model: torch.nn.Module, ckpt_path: str) -> int:
     if not isinstance(ckpt, dict):
         raise TypeError(f"Checkpoint is not a dict: {type(ckpt)}")
     
-    # 查找模型状态
     cand_keys = ["model_trainable", "model_trainable_state", "trainable_state", "model_state", "state_dict"]
     state = None
     for k in cand_keys:
@@ -102,7 +130,7 @@ def load_checkpoint(model: torch.nn.Module, ckpt_path: str) -> int:
         state = ckpt
     
     if state is None:
-        raise KeyError(f"Cannot find model state in checkpoint. keys={list(ckpt.keys())}")
+        raise KeyError(f"Cannot find model state. keys={list(ckpt.keys())}")
     
     missing, unexpected = model.load_state_dict(state, strict=False)
     if missing:
@@ -117,7 +145,7 @@ def load_checkpoint(model: torch.nn.Module, ckpt_path: str) -> int:
 def main():
     parser = argparse.ArgumentParser(description="M1 推理样例生成")
     parser.add_argument("--config", type=str, required=True, help="配置文件路径")
-    parser.add_argument("--ckpt", type=str, default=None, help="检查点路径（默认自动查找 final.pt）")
+    parser.add_argument("--ckpt", type=str, default=None, help="检查点路径")
     parser.add_argument("--split", type=str, default="valid", choices=["valid", "test"])
     parser.add_argument("--num_samples", type=int, default=50, help="采样数量")
     parser.add_argument("--seed", type=int, default=3407)
@@ -190,36 +218,61 @@ def main():
     model.eval()
     print(f"[infer] loaded step={step}")
 
-    # 构建数据加载器
+    # 构建数据集（按数据源均匀采样）
     sources = build_sources(cfg["data"]["sources"])
-    loader = build_caption_loader(
-        split=args.split,
-        sources=sources,
+    concat_ds = build_caption_dataset(split=args.split, sources=sources)
+    
+    # 打印各数据源信息
+    print(f"[infer] data sources:")
+    prev = 0
+    for i, ds in enumerate(concat_ds.datasets):
+        ds_name = sources[i].name
+        ds_len = concat_ds.cum[i] - prev
+        print(f"  [{i+1}] {ds_name}: {ds_len} samples")
+        prev = concat_ds.cum[i]
+    print(f"  total: {len(concat_ds)} samples")
+    
+    # 按数据源均匀采样
+    eval_seed = cfg.get("eval", {}).get("seed", 42)
+    subset = build_balanced_subset(concat_ds, total_samples=args.num_samples, seed=eval_seed)
+    print(f"[infer] balanced sampling: {len(subset)} samples ({args.num_samples // len(sources)} per source)")
+    
+    # 创建 DataLoader
+    collate = PretrainCaptionCollator(return_pil=True)
+    loader = torch.utils.data.DataLoader(
+        subset,
         batch_size=1,
+        shuffle=False,
         num_workers=int(cfg["data"].get("num_workers", 4)),
-        return_pil=True,
         pin_memory=True,
-        shuffle=True,  # 随机采样
+        collate_fn=collate,
     )
 
     # 推理
     prompt_prefix = cfg["train"].get("prompt_prefix", "Describe the medical image:\n")
     samples: List[Dict[str, Any]] = []
     
-    print(f"[infer] sampling {args.num_samples} from {args.split}...")
+    # 详细计时列表
+    vision_bridge_ms_list: List[float] = []
+    decode_ms_list: List[float] = []
+    tokens_per_s_list: List[float] = []
+    num_tokens_list: List[int] = []
+    
+    print(f"[infer] generating {len(subset)} samples from {args.split}...")
     t0 = time.time()
     
     for i, batch in enumerate(loader):
-        if i >= args.num_samples:
-            break
-        
         images_pil = batch["images_pil"]
         gt_caption = batch["captions"][0]
         meta = batch["meta"][0]
         
-        # 生成
-        t_gen = time.time()
-        pred_caption = model.generate_caption(
+        # 重置显存统计
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
+            torch.cuda.synchronize()
+        
+        # 生成（带详细计时）
+        pred_list, timing = model.generate_caption_with_timing(
             images_pil=images_pil,
             device=device,
             prompt_prefix=prompt_prefix,
@@ -230,8 +283,19 @@ def main():
             no_repeat_ngram_size=gen_params["no_repeat_ngram_size"],
             repetition_penalty=gen_params["repetition_penalty"],
             early_stopping=gen_params["early_stopping"],
-        )[0]
-        gen_time_ms = (time.time() - t_gen) * 1000
+        )
+        pred_caption = pred_list[0]
+        
+        # 记录计时
+        vision_bridge_ms_list.append(timing["vision_bridge_ms"])
+        decode_ms_list.append(timing["decode_ms"])
+        tokens_per_s_list.append(timing["tokens_per_s"])
+        num_tokens_list.append(timing["num_tokens"])
+        
+        # 峰值显存
+        peak_mem_gb = None
+        if device.type == "cuda":
+            peak_mem_gb = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
         
         sample = {
             "sample_idx": i,
@@ -240,33 +304,54 @@ def main():
             "image_path": meta.get("image_path", ""),
             "gt_caption": gt_caption,
             "pred_caption": pred_caption,
-            "gen_time_ms": round(gen_time_ms, 2),
+            "timing": {
+                "vision_bridge_ms": round(timing["vision_bridge_ms"], 2),
+                "decode_ms": round(timing["decode_ms"], 2),
+                "num_tokens": timing["num_tokens"],
+                "tokens_per_s": round(timing["tokens_per_s"], 2),
+            },
+            "peak_mem_gb": round(peak_mem_gb, 3) if peak_mem_gb else None,
         }
         samples.append(sample)
         
         if (i + 1) % 10 == 0:
-            print(f"  [{i+1}/{args.num_samples}] {sample['image_id'][:30]}...")
+            print(f"  [{i+1}/{len(subset)}] vb={timing['vision_bridge_ms']:.1f}ms dec={timing['decode_ms']:.1f}ms tok/s={timing['tokens_per_s']:.1f}")
 
     total_time = time.time() - t0
     
+    # 统计
+    avg_vision_bridge_ms = sum(vision_bridge_ms_list) / len(vision_bridge_ms_list) if vision_bridge_ms_list else 0
+    avg_decode_ms = sum(decode_ms_list) / len(decode_ms_list) if decode_ms_list else 0
+    avg_tokens_per_s = sum(tokens_per_s_list) / len(tokens_per_s_list) if tokens_per_s_list else 0
+    avg_num_tokens = sum(num_tokens_list) / len(num_tokens_list) if num_tokens_list else 0
+    
     # 保存结果
-    out_file = os.path.join(out_dir, f"samples_{args.split}_{args.num_samples}.jsonl")
+    out_file = os.path.join(out_dir, f"samples_{args.split}_{len(samples)}.jsonl")
     with open(out_file, "w", encoding="utf-8") as f:
         for s in samples:
             f.write(json.dumps(s, ensure_ascii=False) + "\n")
     
-    print(f"\n[infer] Done!")
-    print(f"  samples: {len(samples)}")
-    print(f"  total time: {total_time:.1f}s")
-    print(f"  avg time per sample: {total_time/len(samples)*1000:.1f}ms")
-    print(f"  output: {out_file}")
+    # 打印总结
+    print("\n" + "=" * 60)
+    print(f"  ECQFormer-M1 Inference Results ({args.split})")
+    print("=" * 60)
+    print(f"  Samples: {len(samples)}")
+    print(f"  Total Time: {total_time:.1f}s")
+    print("-" * 60)
+    print("  [Timing Statistics]")
+    print(f"    Avg Vision+Bridge: {avg_vision_bridge_ms:.2f}ms")
+    print(f"    Avg Decode:        {avg_decode_ms:.2f}ms")
+    print(f"    Avg Tokens/sec:    {avg_tokens_per_s:.2f}")
+    print(f"    Avg Tokens:        {avg_num_tokens:.1f}")
+    print("=" * 60)
+    print(f"  Output: {out_file}")
     
     # 打印几个样例
     print("\n[infer] Example outputs:")
     for s in samples[:3]:
         print(f"  ID: {s['image_id']}")
-        print(f"  GT: {s['gt_caption'][:100]}...")
-        print(f"  Pred: {s['pred_caption'][:100]}...")
+        print(f"  GT: {s['gt_caption'][:80]}...")
+        print(f"  Pred: {s['pred_caption'][:80]}...")
         print()
 
 
