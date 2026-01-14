@@ -45,7 +45,7 @@ def build_sources(cfg_sources):
         )
     return sources
 
-def main(config_path: str = "configs/m1.yaml"):
+def main(config_path: str = "config/m1.yaml"):
     # hard offline mode
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
