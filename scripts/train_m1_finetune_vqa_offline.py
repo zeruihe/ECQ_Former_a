@@ -1,51 +1,33 @@
-# train_m1_pretrain_caption_offline.py
+# train_m1_finetune_vqa_offline.py
 from __future__ import annotations
-import os, sys
+
+import os
+import sys
+import time
+import json
+from typing import Dict, List, Optional
+
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-import time
 import yaml
 import torch
 from torch.optim import AdamW
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 
-from data import build_caption_loader
-from data.schema import DataSourceCfg, AnnSplitCfg
-
+from data import build_vqa_loader
 from models.ecqformer_m1_offline import ECQFormerM1Offline
-from utils.checkpoint import (
-    set_seed,
-    save_checkpoint,
-    load_checkpoint,
-    rotate_checkpoints,
-)
+from utils.checkpoint import set_seed, save_checkpoint, load_checkpoint, rotate_checkpoints
+from utils.vqa_metrics import compute_vqa_metrics
+
 
 def count_trainable_params(model: torch.nn.Module) -> int:
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-def build_sources(cfg_sources):
-    sources = []
-    for s in cfg_sources:
-        sources.append(
-            DataSourceCfg(
-                name=s["name"],
-                root=s["root"],
-                ann=AnnSplitCfg(
-                    train=s["ann"]["train"],
-                    valid=s["ann"]["valid"],
-                    test=s["ann"]["test"],
-                ),
-                image_key=s["image_key"],
-                text_key=s["text_key"],
-                id_key=s.get("id_key", None),
-            )
-        )
-    return sources
 
-def _get_enabled_encoders(cfg_models):
+def _get_enabled_encoders(cfg_models) -> List[str]:
     enc = cfg_models.get("enabled_encoders", None)
     if enc is None:
         return ["clip", "biomedclip", "dinov2"]
@@ -84,7 +66,65 @@ def _compute_max_steps(cfg_train: dict, dataset_size: int, batch_size: int) -> i
         return int(cfg_train["max_steps"])
 
 
-def main(config_path: str = "config/m1.yaml"):
+def _load_trainable_only(model: torch.nn.Module, ckpt_path: str) -> None:
+    payload = torch.load(ckpt_path, map_location="cpu")
+    state = payload.get("model_trainable", payload)
+    missing, unexpected = model.load_trainable_state_dict(state, strict=False)
+    if missing:
+        print(f"[init] missing keys (trainable): {len(missing)}")
+    if unexpected:
+        print(f"[init] unexpected keys (trainable): {len(unexpected)}")
+
+
+@torch.inference_mode()
+def evaluate(
+    *,
+    model: ECQFormerM1Offline,
+    loader,
+    device: torch.device,
+    prompt_template: str,
+    max_new_tokens: int,
+    num_beams: int,
+    temperature: float,
+    top_p: float,
+) -> Dict[str, float]:
+    model.eval()
+    preds: List[str] = []
+    golds: List[str] = []
+    closed: List[bool] = []
+
+    for batch in tqdm(loader, desc="[eval]", leave=False):
+        images_pil = batch["images_pil"]
+        questions = batch["questions"]
+        answers = batch["answers"]
+        is_closed = batch["is_closed"]
+
+        out = model.generate_vqa(
+            images_pil=images_pil,
+            questions=questions,
+            device=device,
+            prompt_template=prompt_template,
+            max_new_tokens=max_new_tokens,
+            num_beams=num_beams,
+            temperature=temperature,
+            top_p=top_p,
+        )
+        preds.extend(out)
+        golds.extend(answers)
+        closed.extend(is_closed)
+
+    m = compute_vqa_metrics(preds, golds, closed)
+    return {
+        "open_acc": m.open_acc,
+        "closed_acc": m.closed_acc,
+        "overall_acc": m.overall_acc,
+        "n_open": m.n_open,
+        "n_closed": m.n_closed,
+        "n_total": m.n_total,
+    }
+
+
+def main(config_path: str = "config/finetune.yaml"):
     # hard offline mode
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -107,16 +147,37 @@ def main(config_path: str = "config/m1.yaml"):
     torch.backends.cudnn.allow_tf32 = True
 
     # data
-    sources = build_sources(cfg["data"]["sources"])
-    loader = build_caption_loader(
-        split=cfg["data"]["split"],
-        sources=sources,
+    train_loader = build_vqa_loader(
+        dataset_id=str(cfg["data"]["dataset_id"]),
+        split=str(cfg["data"]["split"]),
+        cache_dir=cfg["data"].get("cache_dir", None),
+        local_dir=cfg["data"].get("local_dir", None),
+        images_dir=cfg["data"].get("images_dir", None),
+        language=str(cfg["data"].get("language", "en")),
         batch_size=int(cfg["data"]["batch_size"]),
         num_workers=int(cfg["data"]["num_workers"]),
-        return_pil=bool(cfg["data"]["return_pil"]),
         pin_memory=bool(cfg["data"]["pin_memory"]),
         shuffle=bool(cfg["data"]["shuffle"]),
+        max_samples=cfg["data"].get("max_samples", None),
     )
+
+    eval_cfg = cfg.get("eval", {})
+    do_eval = bool(eval_cfg.get("enabled", False))
+    eval_loader = None
+    if do_eval:
+        eval_loader = build_vqa_loader(
+            dataset_id=str(cfg["data"]["dataset_id"]),
+            split=str(eval_cfg.get("split", "validation")),
+            cache_dir=cfg["data"].get("cache_dir", None),
+            local_dir=cfg["data"].get("local_dir", None),
+            images_dir=cfg["data"].get("images_dir", None),
+            language=str(cfg["data"].get("language", "en")),
+            batch_size=int(cfg["data"]["batch_size"]),
+            num_workers=int(cfg["data"]["num_workers"]),
+            pin_memory=bool(cfg["data"]["pin_memory"]),
+            shuffle=False,
+            max_samples=eval_cfg.get("max_samples", None),
+        )
 
     # model
     use_bf16 = bool(cfg["train"].get("bf16", True))
@@ -141,20 +202,22 @@ def main(config_path: str = "config/m1.yaml"):
         torch_dtype=amp_dtype,
     ).to(device)
 
-    print(f"[M1] trainable params = {count_trainable_params(model)/1e6:.2f}M")
+    print(f"[M1 finetune] trainable params = {count_trainable_params(model)/1e6:.2f}M")
 
-    optim = AdamW([p for p in model.parameters() if p.requires_grad],
-                  lr=float(cfg["train"]["lr"]),
-                  weight_decay=float(cfg["train"]["weight_decay"]))
+    optim = AdamW(
+        [p for p in model.parameters() if p.requires_grad],
+        lr=float(cfg["train"]["lr"]),
+        weight_decay=float(cfg["train"]["weight_decay"]),
+    )
 
-    # scaler only for fp16
     scaler = GradScaler(enabled=use_fp16)
 
-    # resume logic
+    # resume / init
     start_step = 0
+    latest_path = os.path.join(ckpt_dir, "latest.pt")
     resume_from = cfg["train"].get("resume_from", None)
     auto_resume = bool(cfg["train"].get("auto_resume", True))
-    latest_path = os.path.join(ckpt_dir, "latest.pt")
+    init_from = cfg["train"].get("init_from", None)
 
     if resume_from:
         print(f"[resume] loading from explicit: {resume_from}")
@@ -166,34 +229,36 @@ def main(config_path: str = "config/m1.yaml"):
         start_step = st.step + 1
     else:
         print("[resume] start from scratch")
+        if init_from:
+            print(f"[init] loading trainable from: {init_from}")
+            _load_trainable_only(model, init_from)
 
     # train settings
     model.train()
     grad_accum = int(cfg["train"]["grad_accum"])
     
     # Compute max_steps from num_epochs or use max_steps directly
-    dataset_size = len(loader.dataset)
+    dataset_size = len(train_loader.dataset)
     batch_size = int(cfg["data"]["batch_size"])
     max_steps = _compute_max_steps(cfg["train"], dataset_size, batch_size)
     max_length = int(cfg["train"]["max_length"])
-    prompt_prefix = str(cfg["train"]["prompt_prefix"])
+    prompt_template = str(cfg["train"]["prompt_template"])
     log_every = int(cfg["train"]["log_every"])
     save_every = int(cfg["train"]["save_every"])
     keep_last_k = int(cfg["train"].get("keep_last_k", 3))
     save_latest = bool(cfg["train"].get("save_latest", True))
 
-    # fast-forward dataloader if resuming (simple approach)
-    # Note: for large start_step, you may want a sampler with set_epoch / stateful dataloader;
-    # for M1 short runs this is acceptable.
-    it = iter(loader)
+    # fast-forward dataloader when resuming
+    it = iter(train_loader)
     for _ in range(start_step):
         try:
             next(it)
         except StopIteration:
-            it = iter(loader)
+            it = iter(train_loader)
 
     running = 0.0
     t0 = time.time()
+    best_overall: float = -1.0
 
     optim.zero_grad(set_to_none=True)
 
@@ -202,18 +267,20 @@ def main(config_path: str = "config/m1.yaml"):
         try:
             batch = next(it)
         except StopIteration:
-            it = iter(loader)
+            it = iter(train_loader)
             batch = next(it)
 
         images_pil = batch["images_pil"]
-        captions = batch["captions"]
+        questions = batch["questions"]
+        answers = batch["answers"]
 
         with autocast(enabled=True, dtype=amp_dtype):
-            loss = model.forward_caption_pretrain(
+            loss = model.forward_vqa_finetune(
                 images_pil=images_pil,
-                captions=captions,
+                questions=questions,
+                answers=answers,
                 device=device,
-                prompt_prefix=prompt_prefix,
+                prompt_template=prompt_template,
                 max_length=max_length,
             )
             loss = loss / grad_accum
@@ -240,8 +307,35 @@ def main(config_path: str = "config/m1.yaml"):
             avg_loss = running / (step - start_step + 1)
             pbar.set_description(f"step={step} avg_loss={avg_loss:.4f}")
 
-        # save checkpoint
+        # checkpoint + (optional) eval
         if save_every > 0 and step > 0 and (step % save_every == 0):
+            extra = {"avg_loss": running / (step - start_step + 1)}
+            if do_eval and eval_loader is not None:
+                metrics = evaluate(
+                    model=model,
+                    loader=eval_loader,
+                    device=device,
+                    prompt_template=prompt_template,
+                    max_new_tokens=int(eval_cfg.get("max_new_tokens", 32)),
+                    num_beams=int(eval_cfg.get("num_beams", 1)),
+                    temperature=float(eval_cfg.get("temperature", 0.7)),
+                    top_p=float(eval_cfg.get("top_p", 0.95)),
+                )
+                extra.update({"eval": metrics})
+                if float(metrics["overall_acc"]) > best_overall:
+                    best_overall = float(metrics["overall_acc"])
+                    best_path = os.path.join(ckpt_dir, "best.pt")
+                    save_checkpoint(
+                        ckpt_path=best_path,
+                        model_trainable_state=model.trainable_state_dict(),
+                        optimizer_state=optim.state_dict(),
+                        scaler_state=(scaler.state_dict() if use_fp16 else None),
+                        step=step,
+                        config=cfg,
+                        extra={"best_metric": best_overall, **extra},
+                    )
+                    print(f"[ckpt] best saved: {best_path} (overall={best_overall:.4f})")
+
             ckpt_path = os.path.join(ckpt_dir, f"step_{step}.pt")
             save_checkpoint(
                 ckpt_path=ckpt_path,
@@ -250,7 +344,7 @@ def main(config_path: str = "config/m1.yaml"):
                 scaler_state=(scaler.state_dict() if use_fp16 else None),
                 step=step,
                 config=cfg,
-                extra={"avg_loss": running / (step - start_step + 1)},
+                extra=extra,
             )
             if save_latest:
                 save_checkpoint(
@@ -260,12 +354,12 @@ def main(config_path: str = "config/m1.yaml"):
                     scaler_state=(scaler.state_dict() if use_fp16 else None),
                     step=step,
                     config=cfg,
-                    extra={"avg_loss": running / (step - start_step + 1)},
+                    extra=extra,
                 )
             rotate_checkpoints(ckpt_dir, keep_last_k)
             print(f"[ckpt] saved: {ckpt_path}")
 
-    # 训练结束后保存 final.pt
+    # final
     final_path = os.path.join(ckpt_dir, "final.pt")
     final_step = max_steps - 1
     save_checkpoint(
@@ -275,15 +369,27 @@ def main(config_path: str = "config/m1.yaml"):
         scaler_state=(scaler.state_dict() if use_fp16 else None),
         step=final_step,
         config=cfg,
-        extra={"avg_loss": running / (final_step - start_step + 1) if final_step > start_step else running},
+        extra={"avg_loss": running / (final_step - start_step + 1) if final_step > start_step else running, "best_metric": best_overall},
     )
     print(f"[ckpt] final saved: {final_path}")
 
+    # write summary
+    summary_path = os.path.join(run_dir, "summary.json")
+    summary = {
+        "trainable_params": count_trainable_params(model),
+        "enabled_encoders": enabled_encoders,
+        "m_queries": m_queries,
+        "best_overall": best_overall,
+        "time_min": (time.time() - t0) / 60.0,
+    }
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+    print(f"[summary] saved: {summary_path}")
+
     dt = time.time() - t0
-    print(f"[M1] done. time={dt/60:.1f} min, steps={max_steps-start_step}")
+    print(f"[M1 finetune] done. time={dt/60:.1f} min, steps={max_steps-start_step}")
+
 
 if __name__ == "__main__":
-    # 允许：python train_m1_pretrain_caption_offline.py configs/m1.yaml
-    import sys
-    cfg_path = sys.argv[1] if len(sys.argv) > 1 else "config/m1.yaml"
+    cfg_path = sys.argv[1] if len(sys.argv) > 1 else "config/finetune.yaml"
     main(cfg_path)

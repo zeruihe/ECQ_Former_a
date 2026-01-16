@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List
+from typing import List, Optional
 from PIL import Image
 
 import torch
@@ -28,6 +28,7 @@ class ECQFormerM1Offline(nn.Module):
         meq_layers: int = 2,
         meq_heads: int = 12,
         m_queries: int = 96,         # 32*K (K=3 => 96)
+        enabled_encoders: Optional[List[str]] = None,
         torch_dtype=torch.bfloat16,
     ):
         super().__init__()
@@ -44,10 +45,32 @@ class ECQFormerM1Offline(nn.Module):
         self.enc_dino.freeze()
         self.enc_bio.freeze()
 
+        # encoder routing (for ablations)
+        # Use a fixed canonical order to ensure reproducibility across runs.
+        canonical = ["clip", "biomedclip", "dinov2"]
+        if enabled_encoders is None:
+            enabled_encoders = canonical
+        enabled_encoders = [e.lower() for e in enabled_encoders]
+        unknown = [e for e in enabled_encoders if e not in canonical]
+        if unknown:
+            raise ValueError(f"Unknown encoders in enabled_encoders={unknown}. Supported: {canonical}")
+        self.enabled_encoders = [e for e in canonical if e in enabled_encoders]
+
         # Trainable projectors -> d_bridge
         self.proj_clip = LinearProjector(self.enc_clip.out_dim, d_bridge)
         self.proj_dino = LinearProjector(self.enc_dino.out_dim, d_bridge)
         self.proj_bio  = LinearProjector(self.enc_bio.out_dim,  d_bridge)
+
+        # Freeze unused projectors to make Trainable Params comparable across ablations.
+        if "clip" not in self.enabled_encoders:
+            for p in self.proj_clip.parameters():
+                p.requires_grad_(False)
+        if "dinov2" not in self.enabled_encoders:
+            for p in self.proj_dino.parameters():
+                p.requires_grad_(False)
+        if "biomedclip" not in self.enabled_encoders:
+            for p in self.proj_bio.parameters():
+                p.requires_grad_(False)
 
         # MEQFormer
         self.meq = MEQFormer(d=d_bridge, nhead=meq_heads, num_layers=meq_layers, m_queries=m_queries, dropout=0.0)
@@ -64,16 +87,20 @@ class ECQFormerM1Offline(nn.Module):
 
     def encode_vision(self, images_pil: List[Image.Image], device: torch.device) -> torch.Tensor:
         # encoders are inference_mode; output dtype likely bf16/fp16 depending on torch_dtype
-        vt_clip = self.enc_clip(images_pil, device=device).tokens
-        vt_dino = self.enc_dino(images_pil, device=device).tokens
-        vt_bio  = self.enc_bio(images_pil,  device=device).tokens
-
-        x_clip = self.proj_clip(vt_clip)
-        x_dino = self.proj_dino(vt_dino)
-        x_bio  = self.proj_bio(vt_bio)
-
-        x_v = torch.cat([x_clip, x_bio, x_dino], dim=1)  # 顺序可固定，便于复现实验
-        return x_v
+        xs = []
+        # fixed concat order: clip -> biomedclip -> dinov2
+        if "clip" in self.enabled_encoders:
+            vt = self.enc_clip(images_pil, device=device).tokens
+            xs.append(self.proj_clip(vt))
+        if "biomedclip" in self.enabled_encoders:
+            vt = self.enc_bio(images_pil, device=device).tokens
+            xs.append(self.proj_bio(vt))
+        if "dinov2" in self.enabled_encoders:
+            vt = self.enc_dino(images_pil, device=device).tokens
+            xs.append(self.proj_dino(vt))
+        if not xs:
+            raise RuntimeError("enabled_encoders is empty: at least one vision encoder must be enabled")
+        return torch.cat(xs, dim=1)
 
     def forward_caption_pretrain(
         self,
@@ -98,6 +125,70 @@ class ECQFormerM1Offline(nn.Module):
             max_length=max_length,
         )
         return out.loss
+
+    def forward_vqa_finetune(
+        self,
+        *,
+        images_pil: List[Image.Image],
+        questions: List[str],
+        answers: List[str],
+        device: torch.device,
+        prompt_template: str = "You are a helpful medical assistant. Answer the question based on the image.\nQuestion: {question}\nAnswer:",
+        max_length: int = 256,
+    ) -> torch.Tensor:
+        """Supervised fine-tuning for Med-VQA.
+
+        We keep the training objective identical to caption pretrain:
+        soft_prompt + textual prompt -> next-token LM loss on target answer.
+        """
+        x_v = self.encode_vision(images_pil, device=device)
+        z = self.meq(x_v).z
+        soft = self.soft_proj(z)
+
+        prompts = [prompt_template.format(question=q) for q in questions]
+        targets = [a for a in answers]
+        out = self.lm.forward_with_soft_prompt(
+            soft_prompt=soft,
+            prompts=prompts,
+            targets=targets,
+            device=device,
+            max_length=max_length,
+        )
+        return out.loss
+
+    @torch.inference_mode()
+    def generate_vqa(
+        self,
+        *,
+        images_pil: List[Image.Image],
+        questions: List[str],
+        device: torch.device = None,
+        prompt_template: str = "You are a helpful medical assistant. Answer the question based on the image.\nQuestion: {question}\nAnswer:",
+        max_new_tokens: int = 32,
+        num_beams: int = 1,
+        temperature: float = 0.7,
+        top_p: float = 0.95,
+        no_repeat_ngram_size: int = 0,
+        repetition_penalty: float = 1.0,
+        early_stopping: bool = False,
+    ) -> List[str]:
+        if device is None:
+            device = next(self.parameters()).device
+
+        soft = self.build_soft_prompt(images_pil, device=device)
+        prompts = [prompt_template.format(question=q) for q in questions]
+        return self.lm.generate_with_soft_prompt(
+            soft_prompt=soft,
+            prompts=prompts,
+            device=device,
+            max_new_tokens=max_new_tokens,
+            num_beams=num_beams,
+            temperature=temperature,
+            top_p=top_p,
+            no_repeat_ngram_size=no_repeat_ngram_size,
+            repetition_penalty=repetition_penalty,
+            early_stopping=early_stopping,
+        )
 
     @torch.inference_mode()
     def build_soft_prompt(self, images_pil: List[Image.Image], device: torch.device) -> torch.Tensor:
@@ -229,7 +320,15 @@ class ECQFormerM1Offline(nn.Module):
         proj_* + meq + soft_proj
         """
         full = self.state_dict()
-        keep_prefix = ("proj_clip.", "proj_dino.", "proj_bio.", "meq.", "soft_proj.")
+        keep_prefix = ["meq.", "soft_proj."]
+        # Only save enabled projectors (and any other trainable ones) to keep ckpt small.
+        if any(p.requires_grad for p in self.proj_clip.parameters()):
+            keep_prefix.append("proj_clip.")
+        if any(p.requires_grad for p in self.proj_bio.parameters()):
+            keep_prefix.append("proj_bio.")
+        if any(p.requires_grad for p in self.proj_dino.parameters()):
+            keep_prefix.append("proj_dino.")
+        keep_prefix = tuple(keep_prefix)
         return {k: v.cpu() for k, v in full.items() if k.startswith(keep_prefix)}
 
     def load_trainable_state_dict(self, state: dict, strict: bool = False):

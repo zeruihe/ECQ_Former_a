@@ -39,3 +39,40 @@ class PretrainCaptionCollator:
             "captions": captions,
             "meta": metas,
         }
+
+class VQACollator:
+    """Collate for Med-VQA fine-tuning / evaluation.
+
+    The dataset may provide either:
+      - image_pil (already loaded), or
+      - image_path (path on disk)
+    """
+
+    def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+        images_pil = []
+        questions = []
+        answers = []
+        qids = []
+        is_closed = []
+        metas = []
+
+        for ex in batch:
+            if ex.get("image_pil") is not None:
+                im = ex["image_pil"].convert("RGB")
+            else:
+                im = load_pil_rgb(ex["image_path"])
+            images_pil.append(im)
+            questions.append(str(ex.get("question", "")))
+            answers.append(str(ex.get("answer", "")))
+            qids.append(str(ex.get("qid", ex.get("id", ""))))
+            is_closed.append(bool(ex.get("is_closed", False)))
+            metas.append(ex.get("meta") or {})
+
+        return {
+            "images_pil": images_pil,
+            "questions": questions,
+            "answers": answers,
+            "qids": qids,
+            "is_closed": is_closed,
+            "meta": metas,
+        }

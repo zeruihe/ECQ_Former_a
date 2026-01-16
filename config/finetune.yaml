@@ -1,0 +1,70 @@
+# Fine-tuning config for Med-VQA (offline)
+
+output:
+  out_dir: "/root/autodl-tmp/outputs"
+  run_name: "m1_finetune_pathvqa"
+
+models:
+  # Offline cached model directories (already on your AutoDL disk)
+  llama_dir: "/root/autodl-tmp/hf_models/Llama-3.1-8B-UltraMedical"
+  clip_dir: "/root/autodl-tmp/hf_models/clip-vit-large-patch14"
+  dinov2_dir: "/root/autodl-tmp/hf_models/dinov2-large"
+  biomedclip_dir: "/root/autodl-tmp/hf_models/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+
+  # Encoder ablation switch: [clip], [clip, biomedclip], [clip, biomedclip, dinov2]
+  enabled_encoders: ["clip", "biomedclip", "dinov2"]
+  auto_m_queries: true   # m_queries = 32 * len(enabled_encoders)
+
+  d_bridge: 768
+  meq_layers: 12
+  meq_heads: 12
+  # m_queries: 96  # optional if auto_m_queries=false
+
+data:
+  dataset_id: "flaviagiammarino/path-vqa"   # or flaviagiammarino/vqa-rad, BoKelvin/SLAKE
+  split: "train"                            # train / validation / test
+  cache_dir: "/root/autodl-tmp/dataset"      # HF cache root (already downloaded)
+  local_dir: null                            # optional: if you used save_to_disk
+  images_dir: null                           # optional: set for SLAKE if images are extracted
+  language: "en"                            # SLAKE supports en/zh; ignored for others
+
+  batch_size: 2
+  num_workers: 0
+  pin_memory: true
+  shuffle: true
+  max_samples: null
+
+train:
+  seed: 42
+  bf16: true
+  fp16: false
+
+  # Initialize from a pretrain checkpoint (trainable-only)
+  init_from: "/root/autodl-tmp/outputs/m1_pertrain_clip/checkpoints/final.pt"
+
+  lr: 2.0e-5
+  weight_decay: 0.0
+  grad_accum: 4
+  
+  # Epoch-based training (recommended)
+  # num_epochs takes priority over max_steps
+  # Finetune: typically 3-10 epochs
+  num_epochs: 5
+  # max_steps: 2000  # fallback if num_epochs is not set
+  
+  max_length: 256
+  log_every: 10
+  save_every: 500
+  keep_last_k: 3
+  save_latest: true
+
+  # Prompt
+  prompt_template: "You are a helpful medical assistant. Answer the question based on the image.\nQuestion: {question}\nAnswer:"
+
+eval:
+  enabled: true
+  split: "validation"
+  max_new_tokens: 32
+  num_beams: 1
+  temperature: 0.7
+  top_p: 0.95
