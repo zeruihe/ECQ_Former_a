@@ -67,13 +67,46 @@ def _compute_max_steps(cfg_train: dict, dataset_size: int, batch_size: int) -> i
 
 
 def _load_trainable_only(model: torch.nn.Module, ckpt_path: str) -> None:
+    """Load trainable weights from checkpoint with shape and dtype validation.
+    
+    If encoder config differs between pretrain and finetune, some weights
+    (like meq.queries) may have different shapes. We skip those and warn.
+    """
     payload = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     state = payload.get("model_trainable", payload)
-    missing, unexpected = model.load_trainable_state_dict(state, strict=False)
-    if missing:
-        print(f"[init] missing keys (trainable): {len(missing)}")
-    if unexpected:
-        print(f"[init] unexpected keys (trainable): {len(unexpected)}")
+    
+    model_state = model.state_dict()
+    loaded_keys = []
+    skipped_keys = []
+    
+    for k, v in state.items():
+        if k not in model_state:
+            skipped_keys.append((k, "not in model"))
+            continue
+        if model_state[k].shape != v.shape:
+            skipped_keys.append((k, f"shape mismatch: ckpt={v.shape} vs model={model_state[k].shape}"))
+            continue
+        
+        # Convert dtype to match model (crucial for bf16/fp16)
+        target_dtype = model_state[k].dtype
+        if v.dtype != target_dtype:
+            v = v.to(target_dtype)
+        
+        # Check for NaN/Inf in checkpoint
+        if torch.isnan(v).any() or torch.isinf(v).any():
+            skipped_keys.append((k, "contains NaN/Inf values"))
+            continue
+            
+        model_state[k] = v
+        loaded_keys.append(k)
+    
+    model.load_state_dict(model_state, strict=False)
+    
+    print(f"[init] loaded {len(loaded_keys)} keys from checkpoint")
+    if skipped_keys:
+        print(f"[init] skipped {len(skipped_keys)} keys due to mismatch:")
+        for k, reason in skipped_keys:
+            print(f"       - {k}: {reason}")
 
 
 @torch.inference_mode()
@@ -284,6 +317,17 @@ def main(config_path: str = "config/finetune.yaml"):
                 max_length=max_length,
             )
             loss = loss / grad_accum
+
+        # NaN detection with debug info
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"\n[ERROR] NaN/Inf loss detected at step {step}")
+            print(f"  questions: {questions[:2]}...")
+            print(f"  answers: {answers[:2]}...")
+            # Check model parameters for NaN
+            for name, param in model.named_parameters():
+                if param.requires_grad and (torch.isnan(param).any() or torch.isinf(param).any()):
+                    print(f"  NaN/Inf in param: {name}")
+            raise RuntimeError(f"NaN loss at step {step}. Check model weights and data.")
 
         if use_fp16:
             scaler.scale(loss).backward()
