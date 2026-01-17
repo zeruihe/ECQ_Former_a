@@ -2,7 +2,7 @@
 
 output:
   out_dir: "/root/autodl-tmp/outputs"
-  run_name: "m1_finetune_pathvqa"
+  run_name: "m1_finetune_pathvqa_clip"
 
 models:
   # Offline cached model directories (already on your AutoDL disk)
