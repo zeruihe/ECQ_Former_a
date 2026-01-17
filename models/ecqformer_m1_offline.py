@@ -135,6 +135,7 @@ class ECQFormerM1Offline(nn.Module):
         device: torch.device,
         prompt_template: str = "You are a helpful medical assistant. Answer the question based on the image.\nQuestion: {question}\nAnswer:",
         max_length: int = 256,
+        debug_nan: bool = True,
     ) -> torch.Tensor:
         """Supervised fine-tuning for Med-VQA.
 
@@ -142,8 +143,19 @@ class ECQFormerM1Offline(nn.Module):
         soft_prompt + textual prompt -> next-token LM loss on target answer.
         """
         x_v = self.encode_vision(images_pil, device=device)
+        
+        if debug_nan and (torch.isnan(x_v).any() or torch.isinf(x_v).any()):
+            raise RuntimeError(f"NaN/Inf in vision encoding output. x_v stats: min={x_v.min()}, max={x_v.max()}")
+        
         z = self.meq(x_v).z
+        
+        if debug_nan and (torch.isnan(z).any() or torch.isinf(z).any()):
+            raise RuntimeError(f"NaN/Inf after MEQFormer. z stats: min={z.min()}, max={z.max()}")
+        
         soft = self.soft_proj(z)
+        
+        if debug_nan and (torch.isnan(soft).any() or torch.isinf(soft).any()):
+            raise RuntimeError(f"NaN/Inf after soft_proj. soft stats: min={soft.min()}, max={soft.max()}")
 
         prompts = [prompt_template.format(question=q) for q in questions]
         targets = [a for a in answers]
