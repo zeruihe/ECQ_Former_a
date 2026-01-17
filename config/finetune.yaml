@@ -12,7 +12,7 @@ models:
   biomedclip_dir: "/root/autodl-tmp/hf_models/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
 
   # Encoder ablation switch: [clip], [clip, biomedclip], [clip, biomedclip, dinov2]
-  enabled_encoders: ["clip", "biomedclip", "dinov2"]
+  enabled_encoders: ["clip"]
   auto_m_queries: true   # m_queries = 32 * len(enabled_encoders)
 
   d_bridge: 768
