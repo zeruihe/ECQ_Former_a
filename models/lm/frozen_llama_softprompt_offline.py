@@ -74,6 +74,12 @@ class FrozenLlamaWithSoftPromptOffline(nn.Module):
 
         text_emb = self.model.get_input_embeddings()(input_ids)     # (B, L, D)
         
+        # Debug NaN: check inputs
+        if torch.isnan(soft_prompt).any() or torch.isinf(soft_prompt).any():
+            raise RuntimeError(f"NaN/Inf in soft_prompt: dtype={soft_prompt.dtype}, shape={soft_prompt.shape}")
+        if torch.isnan(text_emb).any() or torch.isinf(text_emb).any():
+            raise RuntimeError(f"NaN/Inf in text_emb: dtype={text_emb.dtype}, shape={text_emb.shape}")
+        
         # Ensure soft_prompt has the same dtype as text_emb (crucial for bf16/fp16)
         if soft_prompt.dtype != text_emb.dtype:
             soft_prompt = soft_prompt.to(text_emb.dtype)
@@ -88,6 +94,15 @@ class FrozenLlamaWithSoftPromptOffline(nn.Module):
         labels2 = torch.cat([pad_labels, labels], dim=1)
 
         out = self.model(inputs_embeds=inputs_embeds, attention_mask=attn_mask2, labels=labels2)
+        
+        # Debug NaN: check output
+        if torch.isnan(out.loss) or torch.isinf(out.loss):
+            print(f"[DEBUG] NaN loss from LM")
+            print(f"  inputs_embeds: dtype={inputs_embeds.dtype}, min={inputs_embeds.min():.4f}, max={inputs_embeds.max():.4f}")
+            print(f"  labels valid tokens: {(labels2 != -100).sum()}")
+            print(f"  prompts: {prompts[:1]}")
+            print(f"  targets: {targets[:1]}")
+        
         return LMOutputs(loss=out.loss, logits=out.logits)
 
     @torch.no_grad()
