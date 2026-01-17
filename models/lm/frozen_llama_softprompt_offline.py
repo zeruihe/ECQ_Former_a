@@ -48,18 +48,54 @@ class FrozenLlamaWithSoftPromptOffline(nn.Module):
         device: torch.device,
         max_length: int = 256,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Build input_ids, attention_mask, and labels for causal LM training.
+        
+        Labels are set to -100 for prompt tokens (no loss) and actual token ids for target tokens.
+        """
         full = [p + t for p, t in zip(prompts, targets)]
-        tok_full = self.tokenizer(full, return_tensors="pt", padding=True, truncation=True, max_length=max_length)
-        tok_prompt = self.tokenizer(prompts, return_tensors="pt", padding=True, truncation=True, max_length=max_length)
-
+        
+        # Tokenize full sequences
+        tok_full = self.tokenizer(
+            full, 
+            return_tensors="pt", 
+            padding=True, 
+            truncation=True, 
+            max_length=max_length,
+            add_special_tokens=True,
+        )
+        
         input_ids = tok_full["input_ids"].to(device)
         attn_mask = tok_full["attention_mask"].to(device)
         labels = input_ids.clone()
-
-        prompt_lens = tok_prompt["attention_mask"].sum(dim=1).to(device)
-        for i in range(len(prompts)):
-            labels[i, : prompt_lens[i]] = -100
+        
+        # For each sample, mask prompt tokens
+        for i, (prompt, target) in enumerate(zip(prompts, targets)):
+            # Tokenize prompt alone to get its length
+            prompt_tokens = self.tokenizer(
+                prompt, 
+                add_special_tokens=True,
+                truncation=True,
+                max_length=max_length,
+            )["input_ids"]
+            prompt_len = len(prompt_tokens)
+            
+            # Mask prompt tokens (set to -100)
+            labels[i, :prompt_len] = -100
+        
+        # Mask padding tokens
         labels[attn_mask == 0] = -100
+        
+        # Debug: check if any valid labels exist
+        valid_count = (labels != -100).sum().item()
+        if valid_count == 0:
+            print(f"[WARNING] No valid labels! prompts[0]={prompts[0][:50]}..., targets[0]={targets[0]}")
+            print(f"  input_ids shape: {input_ids.shape}")
+            # Emergency fix: use at least last token as label
+            for i in range(labels.shape[0]):
+                last_valid = attn_mask[i].sum().item() - 1
+                if last_valid > 0:
+                    labels[i, last_valid] = input_ids[i, last_valid]
+        
         return input_ids, attn_mask, labels
 
     def forward_with_soft_prompt(
