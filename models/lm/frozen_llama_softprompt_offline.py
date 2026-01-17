@@ -73,6 +73,11 @@ class FrozenLlamaWithSoftPromptOffline(nn.Module):
         input_ids, attn_mask, labels = self.build_prompt_and_labels(prompts, targets, device, max_length=max_length)
 
         text_emb = self.model.get_input_embeddings()(input_ids)     # (B, L, D)
+        
+        # Ensure soft_prompt has the same dtype as text_emb (crucial for bf16/fp16)
+        if soft_prompt.dtype != text_emb.dtype:
+            soft_prompt = soft_prompt.to(text_emb.dtype)
+        
         inputs_embeds = torch.cat([soft_prompt, text_emb], dim=1)   # (B, M+L, D)
 
         B, M, _ = soft_prompt.shape
