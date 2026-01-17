@@ -6,7 +6,7 @@ output:
 
 models:
   # Offline cached model directories (already on your AutoDL disk)
-  llama_dir: "/root/autodl-tmp/hf_models/Llama-3.1-8B-UltraMedical"
+  llama_dir: "/root/autodl-tmp/hf_models/TsinghuaC3I/Llama-3.1-8B-UltraMedical"
   clip_dir: "/root/autodl-tmp/hf_models/clip-vit-large-patch14"
   dinov2_dir: "/root/autodl-tmp/hf_models/dinov2-large"
   biomedclip_dir: "/root/autodl-tmp/hf_models/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
