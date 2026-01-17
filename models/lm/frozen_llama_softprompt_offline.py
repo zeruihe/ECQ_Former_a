@@ -70,31 +70,29 @@ class FrozenLlamaWithSoftPromptOffline(nn.Module):
         
         # For each sample, mask prompt tokens
         for i, (prompt, target) in enumerate(zip(prompts, targets)):
-            # Tokenize prompt alone to get its length
-            prompt_tokens = self.tokenizer(
-                prompt, 
-                add_special_tokens=True,
-                truncation=True,
-                max_length=max_length,
-            )["input_ids"]
-            prompt_len = len(prompt_tokens)
+            # Tokenize prompt WITHOUT special tokens at end to get accurate length
+            prompt_tokens = self.tokenizer.encode(prompt, add_special_tokens=False)
             
-            # Mask prompt tokens (set to -100)
-            labels[i, :prompt_len] = -100
+            # The full sequence has BOS at start, so prompt starts at position 1 (after BOS)
+            # Or if no BOS, starts at 0. We mask [0, prompt_len) for the prompt part.
+            # To be safe: compute how many tokens are for prompt vs target
+            target_tokens = self.tokenizer.encode(target, add_special_tokens=False)
+            
+            # Calculate the actual prompt length in the full tokenized sequence
+            # Full = [BOS?] + prompt_tokens + target_tokens + [EOS?]
+            seq_len = attn_mask[i].sum().item()
+            target_len = len(target_tokens)
+            
+            # Ensure at least 1 target token for loss
+            prompt_mask_len = max(0, seq_len - target_len)
+            
+            # Don't mask more than seq_len - 1 (keep at least last token)
+            prompt_mask_len = min(prompt_mask_len, seq_len - 1)
+            
+            labels[i, :prompt_mask_len] = -100
         
         # Mask padding tokens
         labels[attn_mask == 0] = -100
-        
-        # Debug: check if any valid labels exist
-        valid_count = (labels != -100).sum().item()
-        if valid_count == 0:
-            print(f"[WARNING] No valid labels! prompts[0]={prompts[0][:50]}..., targets[0]={targets[0]}")
-            print(f"  input_ids shape: {input_ids.shape}")
-            # Emergency fix: use at least last token as label
-            for i in range(labels.shape[0]):
-                last_valid = attn_mask[i].sum().item() - 1
-                if last_valid > 0:
-                    labels[i, last_valid] = input_ids[i, last_valid]
         
         return input_ids, attn_mask, labels
 
