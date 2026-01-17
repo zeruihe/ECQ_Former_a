@@ -67,7 +67,7 @@ def _compute_max_steps(cfg_train: dict, dataset_size: int, batch_size: int) -> i
 
 
 def _load_trainable_only(model: torch.nn.Module, ckpt_path: str) -> None:
-    payload = torch.load(ckpt_path, map_location="cpu")
+    payload = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     state = payload.get("model_trainable", payload)
     missing, unexpected = model.load_trainable_state_dict(state, strict=False)
     if missing:

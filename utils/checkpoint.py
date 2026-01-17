@@ -82,7 +82,7 @@ def load_checkpoint(
     scaler: Optional[Any] = None,
     map_location: str = "cpu",
 ) -> CheckpointState:
-    payload = torch.load(ckpt_path, map_location=map_location)
+    payload = torch.load(ckpt_path, map_location=map_location, weights_only=False)
 
     # trainable-only load
     missing, unexpected = model.load_trainable_state_dict(payload["model_trainable"], strict=False)
