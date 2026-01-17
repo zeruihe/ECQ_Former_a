@@ -72,18 +72,75 @@ class HuggingFaceVQADataset(Dataset):
                 "Missing dependency: datasets. Please `pip install datasets` in your env."
             ) from e
 
-        # 1) Prefer load_from_disk if the user saved a dataset locally.
+        # 1) Prefer load_from_disk if the user saved a dataset locally (via save_to_disk).
         if self.local_dir and os.path.isdir(self.local_dir):
+            # Check for DatasetDict format
             cand = os.path.join(self.local_dir, "dataset_dict.json")
             if os.path.exists(cand):
                 dd = load_from_disk(self.local_dir)
-                # dd can be DatasetDict
                 if hasattr(dd, "__getitem__") and self.split in dd:
                     return dd[self.split]
                 return dd
+            # Check for single Dataset format (split already selected)
+            cand2 = os.path.join(self.local_dir, "dataset_info.json")
+            if os.path.exists(cand2):
+                return load_from_disk(self.local_dir)
+            # Check for split subdirectory
+            split_dir = os.path.join(self.local_dir, self.split)
+            if os.path.isdir(split_dir):
+                return load_from_disk(split_dir)
 
-        # 2) Otherwise, rely on HF cache (offline).
-        return load_dataset(self.dataset_id, split=self.split, cache_dir=self.cache_dir)
+        # 3) Try loading from local HF repo clone (parquet files in data/ subdirectory)
+        if self.cache_dir and os.path.isdir(self.cache_dir):
+            # Check if this is a cloned HF repo with parquet files in data/
+            data_subdir = os.path.join(self.cache_dir, "data")
+            if os.path.isdir(data_subdir):
+                parquet_files = [f for f in os.listdir(data_subdir) if f.endswith(".parquet")]
+                if parquet_files:
+                    try:
+                        print(f"[vqa_dataset] loading from local repo: {self.cache_dir}")
+                        ds = load_dataset(self.cache_dir, data_dir="data", split=self.split)
+                        return ds
+                    except Exception as e:
+                        print(f"[vqa_dataset] failed to load from repo: {e}")
+            
+            # HF datasets cache structure: try walking to find saved datasets
+            for root, dirs, files in os.walk(self.cache_dir):
+                if "dataset_info.json" in files:
+                    try:
+                        ds = load_from_disk(root)
+                        if hasattr(ds, "__getitem__") and self.split in ds:
+                            print(f"[vqa_dataset] loaded from cache: {root}")
+                            return ds[self.split]
+                        elif not hasattr(ds, "__getitem__"):
+                            print(f"[vqa_dataset] loaded from cache: {root}")
+                            return ds
+                    except Exception:
+                        continue
+                if "dataset_dict.json" in files:
+                    try:
+                        dd = load_from_disk(root)
+                        if self.split in dd:
+                            print(f"[vqa_dataset] loaded from cache: {root}")
+                            return dd[self.split]
+                    except Exception:
+                        continue
+
+        # 4) Fall back to load_dataset (requires network or proper HF cache)
+        try:
+            return load_dataset(self.dataset_id, split=self.split, cache_dir=self.cache_dir)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to load dataset '{self.dataset_id}' (split={self.split}).\n"
+                f"In offline mode, please use one of these options:\n"
+                f"  1. Set 'local_dir' to a path where you saved the dataset with save_to_disk()\n"
+                f"  2. Ensure the dataset was properly cached in 'cache_dir'\n"
+                f"  3. Run this script first (with network):\n"
+                f"     from datasets import load_dataset\n"
+                f"     ds = load_dataset('{self.dataset_id}')\n"
+                f"     ds.save_to_disk('/path/to/local_dir')\n"
+                f"Original error: {e}"
+            ) from e
 
     def __len__(self) -> int:
         return len(self.ds)
