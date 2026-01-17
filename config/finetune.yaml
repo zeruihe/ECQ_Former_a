@@ -23,7 +23,7 @@ models:
 data:
   dataset_id: "flaviagiammarino/path-vqa"   # or flaviagiammarino/vqa-rad, BoKelvin/SLAKE
   split: "train"                            # train / validation / test
-  cache_dir: "/root/autodl-tmp/datasets"      # HF cache root (already downloaded)
+  cache_dir: "/root/autodl-tmp/datasets/path-vqa"      # HF cache root (already downloaded)
   local_dir: null                            # optional: if you used save_to_disk
   images_dir: null                           # optional: set for SLAKE if images are extracted
   language: "en"                            # SLAKE supports en/zh; ignored for others
