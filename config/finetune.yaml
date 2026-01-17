@@ -28,7 +28,7 @@ data:
   images_dir: null                           # optional: set for SLAKE if images are extracted
   language: "en"                            # SLAKE supports en/zh; ignored for others
 
-  batch_size: 4
+  batch_size: 2
   num_workers: 0
   pin_memory: true
   shuffle: true
@@ -44,17 +44,17 @@ train:
 
   lr: 2.0e-5
   weight_decay: 0.0
-  grad_accum: 2
+  grad_accum: 4
   
   # Epoch-based training (recommended)
   # num_epochs takes priority over max_steps
   # Finetune: typically 3-10 epochs
-  num_epochs: 3
+  num_epochs: 5
   # max_steps: 2000  # fallback if num_epochs is not set
   
   max_length: 256
   log_every: 10
-  save_every: 2000
+  save_every: 500
   keep_last_k: 3
   save_latest: true
 
@@ -64,7 +64,6 @@ train:
 eval:
   enabled: true
   split: "validation"
-  max_samples: 1000               # 只评估 1000 样本，减少评估时间
   max_new_tokens: 32
   num_beams: 1
   temperature: 0.7
