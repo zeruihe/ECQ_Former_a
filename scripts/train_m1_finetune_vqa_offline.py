@@ -20,7 +20,7 @@ from tqdm import tqdm
 from data import build_vqa_loader
 from models.ecqformer_m1_offline import ECQFormerM1Offline
 from utils.checkpoint import set_seed, save_checkpoint, load_checkpoint, rotate_checkpoints
-from utils.vqa_metrics import compute_vqa_metrics, normalize_answer
+from utils.vqa_metrics import compute_vqa_metrics, normalize_answer, clean_prediction
 
 
 def count_trainable_params(model: torch.nn.Module) -> int:
@@ -146,17 +146,19 @@ def evaluate(
         golds.extend(answers)
         closed.extend(is_closed)
 
-    m = compute_vqa_metrics(preds, golds, closed)
+    m = compute_vqa_metrics(preds, golds, closed, use_clean=True)
     
-    # Debug: show first 5 predictions vs gold
-    print("[eval] Sample predictions:")
+    # Debug: show first 5 predictions vs gold (with cleaning)
+    print("[eval] Sample predictions (after cleaning):")
     for i in range(min(5, len(preds))):
-        print(f"  [{i}] pred='{preds[i]}' | gold='{golds[i]}' | match={normalize_answer(preds[i]) == normalize_answer(golds[i])}")
+        cleaned = clean_prediction(preds[i])
+        print(f"  [{i}] pred='{cleaned}' | gold='{golds[i]}' | match={normalize_answer(cleaned) == normalize_answer(golds[i])}")
     
     return {
         "open_acc": m.open_acc,
         "closed_acc": m.closed_acc,
         "overall_acc": m.overall_acc,
+        "contain_acc": m.contain_acc,
         "n_open": m.n_open,
         "n_closed": m.n_closed,
         "n_total": m.n_total,
