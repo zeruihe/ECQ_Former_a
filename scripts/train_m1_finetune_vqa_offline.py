@@ -152,13 +152,16 @@ def evaluate(
     print("[eval] Sample predictions (after cleaning):")
     for i in range(min(5, len(preds))):
         cleaned = clean_prediction(preds[i])
-        print(f"  [{i}] pred='{cleaned}' | gold='{golds[i]}' | match={normalize_answer(cleaned) == normalize_answer(golds[i])}")
+        print(f"  [{i}] pred='{cleaned}' | gold='{golds[i]}' | em={normalize_answer(cleaned) == normalize_answer(golds[i])}")
+    
+    print(f"[eval] BERTScore helped {m.open_bert_helped} open questions")
     
     return {
-        "open_acc": m.open_acc,
-        "closed_acc": m.closed_acc,
-        "overall_acc": m.overall_acc,
-        "contain_acc": m.contain_acc,
+        "open_acc": m.open_acc,           # Hybrid (EM + BERTScore)
+        "closed_acc": m.closed_acc,       # EM only
+        "overall_acc": m.overall_acc,     # (C + O) / N
+        "open_em_only": m.open_em_only,   # Open with EM only (for comparison)
+        "bert_helped": m.open_bert_helped,
         "n_open": m.n_open,
         "n_closed": m.n_closed,
         "n_total": m.n_total,

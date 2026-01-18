@@ -134,14 +134,17 @@ def main(config_path: str = "config/finetune.yaml"):
         qids.extend(qid_batch)
         questions_all.extend(questions)
 
-    m = compute_vqa_metrics(preds, golds, closed)
+    m = compute_vqa_metrics(preds, golds, closed, use_clean=True)
     print("\n==============================")
     print(f"  Dataset: {cfg['data']['dataset_id']}")
     print(f"  Split:   {split}")
     print("------------------------------")
-    print(f"  Open Acc:    {m.open_acc:.4f} (n={m.n_open})")
-    print(f"  Closed Acc:  {m.closed_acc:.4f} (n={m.n_closed})")
-    print(f"  Overall Acc: {m.overall_acc:.4f} (n={m.n_total})")
+    print(f"  Closed Acc:    {m.closed_acc:.4f} (n={m.n_closed}) [EM only]")
+    print(f"  Open Acc:      {m.open_acc:.4f} (n={m.n_open}) [EM + BERTScore]")
+    print(f"  Open EM Only:  {m.open_em_only:.4f} (for comparison)")
+    print(f"  BERTScore Helped: {m.open_bert_helped} questions")
+    print("------------------------------")
+    print(f"  Overall Acc:   {m.overall_acc:.4f} (n={m.n_total})")
     print("==============================\n")
 
     # save per-example predictions for paper appendix / error analysis
@@ -164,12 +167,16 @@ def main(config_path: str = "config/finetune.yaml"):
     metrics_path = os.path.join(run_dir, f"metrics_{split}.json")
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump({
-            "open_acc": m.open_acc,
             "closed_acc": m.closed_acc,
+            "open_acc": m.open_acc,
+            "open_em_only": m.open_em_only,
             "overall_acc": m.overall_acc,
-            "n_open": m.n_open,
+            "bert_helped": m.open_bert_helped,
             "n_closed": m.n_closed,
+            "n_open": m.n_open,
             "n_total": m.n_total,
+            "c_closed": m.c_closed,
+            "c_open": m.c_open,
         }, f, ensure_ascii=False, indent=2)
     print(f"[eval] saved: {metrics_path}")
 
