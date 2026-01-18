@@ -84,6 +84,51 @@ def _compute_max_steps(cfg_train: dict, dataset_size: int, batch_size: int) -> i
         return int(cfg_train["max_steps"])
 
 
+@torch.inference_mode()
+def evaluate_caption(
+    *,
+    model: ECQFormerM1Offline,
+    loader,
+    device: torch.device,
+    prompt_prefix: str,
+    max_length: int,
+    amp_dtype: torch.dtype,
+    max_batches: int = 100,
+) -> dict:
+    """Evaluate caption loss on validation set.
+    
+    Returns dict with avg_val_loss.
+    Uses a subset of batches for efficiency.
+    """
+    model.eval()
+    total_loss = 0.0
+    n_batches = 0
+    
+    for batch in loader:
+        if n_batches >= max_batches:
+            break
+            
+        images_pil = batch["images_pil"]
+        captions = batch["captions"]
+        
+        with torch.cuda.amp.autocast(enabled=True, dtype=amp_dtype):
+            loss = model.forward_caption_pretrain(
+                images_pil=images_pil,
+                captions=captions,
+                device=device,
+                prompt_prefix=prompt_prefix,
+                max_length=max_length,
+            )
+        
+        total_loss += loss.item()
+        n_batches += 1
+    
+    model.train()
+    
+    avg_loss = total_loss / n_batches if n_batches > 0 else float('inf')
+    return {"val_loss": avg_loss, "n_batches": n_batches}
+
+
 def main(config_path: str = "config/m1.yaml"):
     # hard offline mode
     os.environ["HF_HUB_OFFLINE"] = "1"
@@ -117,6 +162,22 @@ def main(config_path: str = "config/m1.yaml"):
         pin_memory=bool(cfg["data"]["pin_memory"]),
         shuffle=bool(cfg["data"]["shuffle"]),
     )
+
+    # Validation loader (optional)
+    eval_cfg = cfg.get("eval", {})
+    do_eval = bool(eval_cfg.get("enabled", False))
+    val_loader = None
+    if do_eval:
+        val_loader = build_caption_loader(
+            split="valid",  # Use validation split
+            sources=sources,
+            batch_size=int(cfg["data"]["batch_size"]),
+            num_workers=int(cfg["data"]["num_workers"]),
+            return_pil=bool(cfg["data"]["return_pil"]),
+            pin_memory=bool(cfg["data"]["pin_memory"]),
+            shuffle=False,  # Don't shuffle validation
+        )
+        print(f"[eval] validation loader ready, samples={len(val_loader.dataset)}")
 
     # model
     use_bf16 = bool(cfg["train"].get("bf16", True))
@@ -182,6 +243,9 @@ def main(config_path: str = "config/m1.yaml"):
     keep_last_k = int(cfg["train"].get("keep_last_k", 3))
     save_latest = bool(cfg["train"].get("save_latest", True))
 
+    # Validation settings
+    max_val_batches = int(eval_cfg.get("max_batches", 100))
+
     # fast-forward dataloader if resuming (simple approach)
     # Note: for large start_step, you may want a sampler with set_epoch / stateful dataloader;
     # for M1 short runs this is acceptable.
@@ -194,6 +258,7 @@ def main(config_path: str = "config/m1.yaml"):
 
     running = 0.0
     t0 = time.time()
+    best_val_loss = float('inf')  # Track best validation loss
 
     optim.zero_grad(set_to_none=True)
 
@@ -240,8 +305,39 @@ def main(config_path: str = "config/m1.yaml"):
             avg_loss = running / (step - start_step + 1)
             pbar.set_description(f"step={step} avg_loss={avg_loss:.4f}")
 
-        # save checkpoint
+        # save checkpoint + (optional) validation
         if save_every > 0 and step > 0 and (step % save_every == 0):
+            extra = {"avg_loss": running / (step - start_step + 1)}
+            
+            # Validation evaluation
+            if do_eval and val_loader is not None:
+                val_metrics = evaluate_caption(
+                    model=model,
+                    loader=val_loader,
+                    device=device,
+                    prompt_prefix=prompt_prefix,
+                    max_length=max_length,
+                    amp_dtype=amp_dtype,
+                    max_batches=max_val_batches,
+                )
+                extra.update({"val": val_metrics})
+                print(f"[eval] val_loss={val_metrics['val_loss']:.4f}")
+                
+                # Save best checkpoint based on validation loss
+                if val_metrics['val_loss'] < best_val_loss:
+                    best_val_loss = val_metrics['val_loss']
+                    best_path = os.path.join(ckpt_dir, "best.pt")
+                    save_checkpoint(
+                        ckpt_path=best_path,
+                        model_trainable_state=model.trainable_state_dict(),
+                        optimizer_state=optim.state_dict(),
+                        scaler_state=(scaler.state_dict() if use_fp16 else None),
+                        step=step,
+                        config=cfg,
+                        extra={"best_val_loss": best_val_loss, **extra},
+                    )
+                    print(f"[ckpt] best saved: {best_path} (val_loss={best_val_loss:.4f})")
+            
             ckpt_path = os.path.join(ckpt_dir, f"step_{step}.pt")
             save_checkpoint(
                 ckpt_path=ckpt_path,
@@ -250,7 +346,7 @@ def main(config_path: str = "config/m1.yaml"):
                 scaler_state=(scaler.state_dict() if use_fp16 else None),
                 step=step,
                 config=cfg,
-                extra={"avg_loss": running / (step - start_step + 1)},
+                extra=extra,
             )
             if save_latest:
                 save_checkpoint(
@@ -260,7 +356,7 @@ def main(config_path: str = "config/m1.yaml"):
                     scaler_state=(scaler.state_dict() if use_fp16 else None),
                     step=step,
                     config=cfg,
-                    extra={"avg_loss": running / (step - start_step + 1)},
+                    extra=extra,
                 )
             rotate_checkpoints(ckpt_dir, keep_last_k)
             print(f"[ckpt] saved: {ckpt_path}")
