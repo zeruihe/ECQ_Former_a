@@ -274,7 +274,21 @@ def main(config_path: str = "config/finetune.yaml"):
     else:
         print("[resume] start from scratch")
         if init_from:
-            print(f"[init] loading trainable from: {init_from}")
+            # Support both file path and directory path
+            # If directory: try best.pt first, then final.pt as fallback
+            if os.path.isdir(init_from):
+                best_path = os.path.join(init_from, "best.pt")
+                final_path = os.path.join(init_from, "final.pt")
+                if os.path.exists(best_path):
+                    init_from = best_path
+                    print(f"[init] found best.pt, loading from: {init_from}")
+                elif os.path.exists(final_path):
+                    init_from = final_path
+                    print(f"[init] best.pt not found, fallback to final.pt: {init_from}")
+                else:
+                    raise FileNotFoundError(f"No checkpoint found in {init_from}")
+            else:
+                print(f"[init] loading trainable from: {init_from}")
             _load_trainable_only(model, init_from)
 
     # train settings

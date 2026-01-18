@@ -40,7 +40,7 @@ train:
   fp16: false
 
   # Initialize from a pretrain checkpoint (trainable-only)
-  init_from: "/root/autodl-tmp/outputs/m1_pertrain_clip/checkpoints/final.pt"
+  init_from: "/root/autodl-tmp/outputs/m1_pertrain_clip/checkpoints"
 
   lr: 2.0e-5
   weight_decay: 0.0
