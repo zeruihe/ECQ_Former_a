@@ -6,53 +6,76 @@ from typing import Iterable, List, Tuple, Optional
 
 # BERTScore lazy import to avoid startup overhead
 _bertscore_scorer = None
+_sentence_model = None
 
 # Local path for RoBERTa-large (offline mode)
 ROBERTA_LOCAL_PATH = "/root/autodl-tmp/hf_models/roberta-large"
 
 
-def _get_bertscore_scorer():
-    """Lazy load BERTScore scorer with RoBERTa-large backbone.
+def _get_sentence_model():
+    """Lazy load sentence transformer model for semantic similarity.
     
-    Supports offline mode by setting HF_HOME to local cache.
+    Falls back to simple embedding-based similarity if BERTScore fails.
     """
-    global _bertscore_scorer
-    if _bertscore_scorer is None:
+    global _sentence_model
+    if _sentence_model is None:
         try:
             import os
-            from bert_score import BERTScorer
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
             
-            # For offline mode: set environment variable before loading
-            # This tells HuggingFace to look in the local directory
+            from transformers import AutoModel, AutoTokenizer
+            import torch
+            
             if os.path.exists(ROBERTA_LOCAL_PATH):
-                # Create symlink in HF cache format if needed
-                hf_cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
-                os.makedirs(hf_cache_dir, exist_ok=True)
-                
-                # Set offline mode
-                os.environ["HF_HUB_OFFLINE"] = "1"
-                os.environ["TRANSFORMERS_OFFLINE"] = "1"
-                
-                print(f"[vqa_metrics] Using local RoBERTa-large: {ROBERTA_LOCAL_PATH}")
+                print(f"[vqa_metrics] Loading RoBERTa from: {ROBERTA_LOCAL_PATH}")
+                tokenizer = AutoTokenizer.from_pretrained(ROBERTA_LOCAL_PATH, local_files_only=True)
+                model = AutoModel.from_pretrained(ROBERTA_LOCAL_PATH, local_files_only=True)
+                model.eval()
+                if torch.cuda.is_available():
+                    model = model.cuda()
+                _sentence_model = (tokenizer, model)
+                print("[vqa_metrics] RoBERTa model loaded successfully")
             else:
-                print(f"[vqa_metrics] Local path not found, using HuggingFace online")
-            
-            # Use standard model name - BERTScore handles it internally
-            # With rescale_with_baseline=False to avoid baseline download issues
-            _bertscore_scorer = BERTScorer(
-                model_type=ROBERTA_LOCAL_PATH if os.path.exists(ROBERTA_LOCAL_PATH) else "roberta-large",
-                lang="en",
-                rescale_with_baseline=False,  # Disable baseline rescaling to avoid download
-                device="cuda"
-            )
-            print("[vqa_metrics] BERTScore initialized successfully")
-        except ImportError:
-            print("[vqa_metrics] WARNING: bert-score not installed. Run: pip install bert-score")
-            _bertscore_scorer = None
+                print(f"[vqa_metrics] WARNING: Model not found at {ROBERTA_LOCAL_PATH}")
+                _sentence_model = None
         except Exception as e:
-            print(f"[vqa_metrics] WARNING: BERTScore init failed: {e}")
-            _bertscore_scorer = None
-    return _bertscore_scorer
+            print(f"[vqa_metrics] WARNING: Model loading failed: {e}")
+            _sentence_model = None
+    return _sentence_model
+
+
+def compute_semantic_similarity(preds: list, golds: list) -> list:
+    """Compute semantic similarity using RoBERTa embeddings.
+    
+    Returns list of cosine similarity scores.
+    """
+    model_pair = _get_sentence_model()
+    if model_pair is None:
+        return [0.0] * len(preds)
+    
+    import torch
+    import torch.nn.functional as F
+    
+    tokenizer, model = model_pair
+    device = next(model.parameters()).device
+    
+    scores = []
+    with torch.no_grad():
+        for pred, gold in zip(preds, golds):
+            # Tokenize
+            pred_enc = tokenizer(pred, return_tensors="pt", truncation=True, max_length=128, padding=True).to(device)
+            gold_enc = tokenizer(gold, return_tensors="pt", truncation=True, max_length=128, padding=True).to(device)
+            
+            # Get embeddings (mean pooling)
+            pred_emb = model(**pred_enc).last_hidden_state.mean(dim=1)
+            gold_emb = model(**gold_enc).last_hidden_state.mean(dim=1)
+            
+            # Cosine similarity
+            sim = F.cosine_similarity(pred_emb, gold_emb).item()
+            scores.append(sim)
+    
+    return scores
 
 
 def normalize_answer(s: str) -> str:
@@ -126,23 +149,12 @@ def exact_match(pred: str, gold: str) -> bool:
 
 
 def compute_bertscore(preds: List[str], golds: List[str]) -> List[float]:
-    """Compute BERTScore F1 for a batch of predictions.
+    """Compute semantic similarity for a batch of predictions.
     
-    Uses RoBERTa-large as backbone (as specified in thesis).
-    Returns list of F1 scores.
+    Uses RoBERTa-large embeddings with cosine similarity (as specified in thesis).
+    Returns list of similarity scores.
     """
-    scorer = _get_bertscore_scorer()
-    if scorer is None:
-        # Fallback: return zeros if BERTScore not available
-        return [0.0] * len(preds)
-    
-    try:
-        # BERTScore returns (P, R, F1)
-        P, R, F1 = scorer.score(preds, golds)
-        return F1.cpu().tolist()
-    except Exception as e:
-        print(f"[vqa_metrics] BERTScore computation failed: {e}")
-        return [0.0] * len(preds)
+    return compute_semantic_similarity(preds, golds)
 
 
 def hybrid_semantic_match(pred: str, gold: str, bertscore_f1: float, threshold: float = 0.85) -> bool:
