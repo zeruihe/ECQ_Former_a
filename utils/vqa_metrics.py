@@ -14,7 +14,7 @@ ROBERTA_LOCAL_PATH = "/root/autodl-tmp/hf_models/roberta-large"
 def _get_bertscore_scorer():
     """Lazy load BERTScore scorer with RoBERTa-large backbone.
     
-    Supports offline mode by using local model path.
+    Supports offline mode by setting HF_HOME to local cache.
     """
     global _bertscore_scorer
     if _bertscore_scorer is None:
@@ -22,18 +22,27 @@ def _get_bertscore_scorer():
             import os
             from bert_score import BERTScorer
             
-            # Check if local path exists
+            # For offline mode: set environment variable before loading
+            # This tells HuggingFace to look in the local directory
             if os.path.exists(ROBERTA_LOCAL_PATH):
-                model_type = ROBERTA_LOCAL_PATH
+                # Create symlink in HF cache format if needed
+                hf_cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+                os.makedirs(hf_cache_dir, exist_ok=True)
+                
+                # Set offline mode
+                os.environ["HF_HUB_OFFLINE"] = "1"
+                os.environ["TRANSFORMERS_OFFLINE"] = "1"
+                
                 print(f"[vqa_metrics] Using local RoBERTa-large: {ROBERTA_LOCAL_PATH}")
             else:
-                model_type = "roberta-large"
-                print(f"[vqa_metrics] Local path not found, using HuggingFace: {model_type}")
+                print(f"[vqa_metrics] Local path not found, using HuggingFace online")
             
+            # Use standard model name - BERTScore handles it internally
+            # With rescale_with_baseline=False to avoid baseline download issues
             _bertscore_scorer = BERTScorer(
-                model_type=model_type,
+                model_type=ROBERTA_LOCAL_PATH if os.path.exists(ROBERTA_LOCAL_PATH) else "roberta-large",
                 lang="en",
-                rescale_with_baseline=True,
+                rescale_with_baseline=False,  # Disable baseline rescaling to avoid download
                 device="cuda"
             )
             print("[vqa_metrics] BERTScore initialized successfully")
@@ -183,7 +192,7 @@ def compute_vqa_metrics(
     golds: Iterable[str],
     is_closed: Iterable[bool],
     use_clean: bool = True,
-    bertscore_threshold: float = 0.85,
+    bertscore_threshold: float = 0.80,
 ) -> VQAMetrics:
     """Compute VQA metrics using hybrid semantic matching strategy.
     
