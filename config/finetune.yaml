@@ -2,7 +2,7 @@
 
 output:
   out_dir: "/root/autodl-tmp/outputs"
-  run_name: "m1_finetune_pathvqa_clip"
+  run_name: "m1_finetune_vqa-rad_clip_biomedclip"
 
 models:
   # Offline cached model directories (already on your AutoDL disk)
@@ -12,7 +12,7 @@ models:
   biomedclip_dir: "/root/autodl-tmp/hf_models/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
 
   # Encoder ablation switch: [clip], [clip, biomedclip], [clip, biomedclip, dinov2]
-  enabled_encoders: ["clip"]
+  enabled_encoders: ["clip", "biomedclip"]
   auto_m_queries: true   # m_queries = 32 * len(enabled_encoders)
 
   d_bridge: 768
@@ -21,9 +21,9 @@ models:
   # m_queries: 96  # optional if auto_m_queries=false
 
 data:
-  dataset_id: "flaviagiammarino/path-vqa"   # or flaviagiammarino/vqa-rad, BoKelvin/SLAKE
+  dataset_id: "flaviagiammarino/vqa-rad"   # or flaviagiammarino/vqa-rad, BoKelvin/SLAKE
   split: "train"                            # train / validation / test
-  cache_dir: "/root/autodl-tmp/datasets/path-vqa"      # HF cache root (already downloaded)
+  cache_dir: "/root/autodl-tmp/datasets/vqa-rad"      # HF cache root (already downloaded)
   local_dir: null                            # optional: if you used save_to_disk
   images_dir: null                           # optional: set for SLAKE if images are extracted
   language: "en"                            # SLAKE supports en/zh; ignored for others
@@ -40,7 +40,7 @@ train:
   fp16: false
 
   # Initialize from a pretrain checkpoint (trainable-only)
-  init_from: "/root/autodl-tmp/outputs/m1_pertrain_clip/checkpoints"
+  init_from: "/root/autodl-tmp/outputs/m1_pertrain_clip_biomedclip/checkpoints"
 
   lr: 2.0e-5
   weight_decay: 0.0
@@ -63,7 +63,7 @@ train:
 
 eval:
   enabled: true
-  split: "test"
+  split: "validation"
   max_new_tokens: 10      # 限制生成长度，强制简短回答
   num_beams: 3            # 使用 beam search 提高质量
   temperature: 0.1        # 降低随机性

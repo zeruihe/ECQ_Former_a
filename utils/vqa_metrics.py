@@ -204,7 +204,7 @@ def compute_vqa_metrics(
     golds: Iterable[str],
     is_closed: Iterable[bool],
     use_clean: bool = True,
-    bertscore_threshold: float = 0.85,
+    bertscore_threshold: float = 0.90,
 ) -> VQAMetrics:
     """Compute VQA metrics using hybrid semantic matching strategy.
     
