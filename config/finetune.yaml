@@ -63,7 +63,7 @@ train:
 
 eval:
   enabled: true
-  split: "validation"
+  split: "test"
   max_new_tokens: 10      # 限制生成长度，强制简短回答
   num_beams: 3            # 使用 beam search 提高质量
   temperature: 0.1        # 降低随机性
