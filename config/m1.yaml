@@ -68,7 +68,7 @@ train:
 
   # logging / checkpoint
   log_every: 10
-  save_every: 200
+  save_every: 2000
   keep_last_k: 3           # 仅保留最近 K 个 step checkpoint
   save_latest: true
 
