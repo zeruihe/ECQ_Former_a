@@ -2,7 +2,7 @@
 
 output:
   out_dir: "/root/autodl-tmp/outputs"
-  run_name: "m1_finetune_vqa-rad_clip_biomedclip"
+  run_name: "m1_finetune_vqa-rad_clip_biomedclip_dinov2"
 
 models:
   # Offline cached model directories (already on your AutoDL disk)
@@ -12,7 +12,7 @@ models:
   biomedclip_dir: "/root/autodl-tmp/hf_models/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
 
   # Encoder ablation switch: [clip], [clip, biomedclip], [clip, biomedclip, dinov2]
-  enabled_encoders: ["clip", "biomedclip"]
+  enabled_encoders: ["clip", "biomedclip", "dinov2"]
   auto_m_queries: true   # m_queries = 32 * len(enabled_encoders)
 
   d_bridge: 768
@@ -40,7 +40,7 @@ train:
   fp16: false
 
   # Initialize from a pretrain checkpoint (trainable-only)
-  init_from: "/root/autodl-tmp/outputs/m1_pertrain_clip_biomedclip/checkpoints"
+  init_from: "/root/autodl-tmp/outputs/m1_pertrain_clip_biomedclip_dinov2/checkpoints"
 
   lr: 2.0e-5
   weight_decay: 0.0
