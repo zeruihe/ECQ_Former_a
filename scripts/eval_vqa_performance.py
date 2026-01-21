@@ -225,6 +225,13 @@ def main():
         meq_layers=int(mcfg.get("meq_layers", 12)),
         meq_heads=int(mcfg.get("meq_heads", 12)),
         m_queries=int(m_queries),
+        # ---- Chapter-3 efficiency switches (optional) ----
+        attn_type=str(cfg["models"].get("attn_type", "standard")),
+        phi=str(cfg["models"].get("phi", "identity")),
+        score_scale=bool(cfg["models"].get("score_scale", True)),
+        score_norm=bool(cfg["models"].get("score_norm", False)),
+        adaptive_drop=cfg["models"].get("adaptive_drop", None),
+        # ---- End Chapter-3 efficiency switches ----
         enabled_encoders=enabled_encoders,
         torch_dtype=amp_dtype,
     ).to(device)

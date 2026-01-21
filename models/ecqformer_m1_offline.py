@@ -30,6 +30,11 @@ class ECQFormerM1Offline(nn.Module):
         m_queries: int = 96,         # 32*K (K=3 => 96)
         enabled_encoders: Optional[List[str]] = None,
         torch_dtype=torch.bfloat16,
+        attn_type: str = "standard",         # standard | param_free
+        phi: str = "identity",               # identity | relu | silu
+        score_scale: bool = True,
+        score_norm: bool = False,
+        adaptive_drop: dict | None = None,  # YAML 里 adaptive_drop 字段原样传进来
     ):
         super().__init__()
         self.torch_dtype = torch_dtype
@@ -73,7 +78,8 @@ class ECQFormerM1Offline(nn.Module):
                 p.requires_grad_(False)
 
         # MEQFormer
-        self.meq = MEQFormer(d=d_bridge, nhead=meq_heads, num_layers=meq_layers, m_queries=m_queries, dropout=0.0)
+        self.meq = MEQFormer(d=d_bridge, nhead=meq_heads, num_layers=meq_layers, m_queries=m_queries, dropout=0.0, attn_type=attn_type, 
+        phi=phi, score_scale=score_scale, score_norm=score_norm, adaptive_drop=adaptive_drop)
 
         # soft prompt projector -> LM embedding dim
         self.soft_proj = nn.Linear(d_bridge, self.lm.embed_dim, bias=True)

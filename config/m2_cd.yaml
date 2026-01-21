@@ -4,10 +4,15 @@ models:
   dinov2_dir: /root/autodl-tmp/hf_models/facebook/dinov2-large
   biomedclip_dir: /root/autodl-tmp/hf_models/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224
 
+   # Encoder ablation switch: [clip], [clip, biomedclip], [clip, biomedclip, dinov2]
+  enabled_encoders: [clip,biomedclip,dinov2]
+  auto_m_queries: true   # m_queries = 32 * len(enabled_encoders)
+
+  # bridge config
   d_bridge: 768
-  meq_layers: 2
+  meq_layers: 12
   meq_heads: 12
-  m_queries: 96
+  # m_queries: 96   # optional if auto_m_queries=false
 
   # Step C/D switches
   attn_type: param_free          # standard | param_free
@@ -51,21 +56,45 @@ data:
 
 train:
   seed: 3407
-  max_steps: 2000
+  
+  # Epoch-based training (recommended)
+  # num_epochs takes priority over max_steps
+  # Pretrain: typically 1-3 epochs
+  num_epochs: 1
+  # max_steps: 2000  # fallback if num_epochs is not set
+  
   grad_accum: 8
   lr: 1.0e-4
   weight_decay: 0.01
   max_length: 256
   prompt_prefix: "Describe the medical image:\n"
-  bf16: true
+
+  # precision
+  bf16: true               # RTX5090 建议 true；若改 fp16，则 bf16=false 且 fp16=true
   fp16: false
+
+  # logging / checkpoint
   log_every: 10
-  save_every: 200
-  keep_last_k: 3
+  save_every: 2000
+  keep_last_k: 3           # 仅保留最近 K 个 step checkpoint
   save_latest: true
-  auto_resume: true
-  resume_from: null
+
+  # resume
+  auto_resume: true        # 若 out_dir/run_name/checkpoints/latest.pt 存在则自动续训
+  resume_from: null        # 手动指定某个 ckpt 路径则优先
+
+# 评估/推理时的解码参数（统一口径，方便不同阶段对比）
+eval:
+  enabled: true           # 启用验证集评估
+  max_batches: 100        # 验证时使用的最大 batch 数（加速评估）
+  max_new_tokens: 32
+  num_beams: 1
+  temperature: 0.7
+  top_p: 0.95
+  no_repeat_ngram_size: 3
+  repetition_penalty: 1.15
+  early_stopping: true
 
 output:
   out_dir: /root/autodl-tmp/outputs
-  run_name: m2_cd_roco_mimic
+  run_name: m2_cd_pertrain

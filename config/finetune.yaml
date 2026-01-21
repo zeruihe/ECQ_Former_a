@@ -20,6 +20,18 @@ models:
   meq_heads: 12
   # m_queries: 96  # optional if auto_m_queries=false
 
+ # Step C/D switches
+  attn_type: param_free          # standard | param_free
+  phi: silu                      # identity | relu | silu
+  score_scale: true              # divide by sqrt(D)
+  score_norm: false              # optional stabilization norm
+
+  adaptive_drop:
+    enabled: true
+    gamma: 0.2                   # {0,0.1,0.2,0.3,0.4}
+    mode: topk                   # topk | sort
+    post: no_softmax             # no_softmax | softmax
+    
 data:
   dataset_id: "flaviagiammarino/vqa-rad"   # or flaviagiammarino/vqa-rad, BoKelvin/SLAKE
   split: "train"                            # train / validation / test
