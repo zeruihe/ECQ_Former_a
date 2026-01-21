@@ -15,9 +15,15 @@ This script:
 from __future__ import annotations
 
 import os
+import sys
 import argparse
 from typing import List
 from PIL import Image
+
+# 添加项目根目录到路径
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 import torch
 import yaml
