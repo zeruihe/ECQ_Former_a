@@ -2,7 +2,7 @@
 
 output:
   out_dir: "/root/autodl-tmp/outputs"
-  run_name: "m2_finetune_vqa-rad_cd
+  run_name: "m2_finetune_vqa-rad_cd"
 models:
   # Offline cached model directories (already on your AutoDL disk)
   llama_dir: "/root/autodl-tmp/hf_models/TsinghuaC3I/Llama-3.1-8B-UltraMedical"
@@ -19,7 +19,7 @@ models:
   meq_heads: 12
   # m_queries: 96  # optional if auto_m_queries=false
 
- # Step C/D switches
+  # Step C/D switches
   attn_type: param_free          # standard | param_free
   phi: silu                      # identity | relu | silu
   score_scale: true              # divide by sqrt(D)
