@@ -2,7 +2,7 @@
 
 output:
   out_dir: "/root/autodl-tmp/outputs"
-  run_name: "m1_finetune_vqa-rad_cd
+  run_name: "m2_finetune_vqa-rad_cd
 models:
   # Offline cached model directories (already on your AutoDL disk)
   llama_dir: "/root/autodl-tmp/hf_models/TsinghuaC3I/Llama-3.1-8B-UltraMedical"
