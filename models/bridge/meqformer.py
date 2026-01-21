@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Optional, Union, Dict, Any, List, Tuple
 
 import torch
 import torch.nn as nn
@@ -15,6 +15,7 @@ from .dropping import AdaptiveDropCfg
 class MEQOutput:
     """MEQFormer 输出：z 为重采样后的查询表示 (B, M, D)。"""
     z: torch.Tensor
+    debug: Optional[Dict[str, Any]] = None
 
 
 class MEQBlock(nn.Module):
@@ -66,10 +67,16 @@ class MEQBlock(nn.Module):
         self.norm3 = nn.LayerNorm(d)
         self.drop = nn.Dropout(dropout)
 
-    def forward(self, q: torch.Tensor, kv: torch.Tensor, kv_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, q: torch.Tensor, kv: torch.Tensor, kv_mask: Optional[torch.Tensor] = None, *, return_attn: bool = False, return_debug: bool = False,) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         # 1) cross-attention
         x = self.norm1(q)
-        x2, _ = self.cross_attn(x, kv, kv_mask=kv_mask, need_weights=False)
+        x2, attn, keep_mask = self.cross_attn(
+            x,
+            kv,
+            kv_mask=kv_mask,
+            need_weights=return_attn,
+            return_debug=return_debug,
+        )
         q = q + self.drop(x2)
 
         # 2) self-attention (queries only)
@@ -80,7 +87,7 @@ class MEQBlock(nn.Module):
         # 3) FFN
         x = self.norm3(q)
         q = q + self.drop(self.ffn(x))
-        return q
+        return q, attn, keep_mask
 
 
 class MEQFormer(nn.Module):
@@ -131,10 +138,69 @@ class MEQFormer(nn.Module):
         ])
         self.norm_out = nn.LayerNorm(d)
 
-    def forward(self, kv: torch.Tensor, kv_mask: Optional[torch.Tensor] = None) -> MEQOutput:
+    def forward(
+        self,
+        kv: torch.Tensor,
+        kv_mask: Optional[torch.Tensor] = None,
+        *,
+        return_attn: bool = False,
+        return_debug: bool = False,
+        kv_splits: Optional[List[Tuple[str, int, int]]] = None,
+        attn_layer: int = -1,
+    ) -> MEQOutput:
+        """
+        Args:
+          return_attn: 是否返回 cross-attn 权重（用于可视化）
+          return_debug: 是否返回 keep_mask 等调试信息（用于解释去噪）
+          kv_splits: 多编码器拼接区间 [(name,start,end), ...]
+          attn_layer: 取哪一层的 cross-attn 来可视化（默认最后一层 -1）
+
+        debug 返回字段：
+          - attn: (B,H,M,N) 某层 cross-attn 权重
+          - keep_mask: (B,N) 若开启 adaptive_drop
+          - kv_splits: 编码器 token 区间
+          - attn_enc: (B,H,M,K) 按编码器聚合后的注意力
+        """
         B = kv.size(0)
         q = self.queries.unsqueeze(0).expand(B, -1, -1)
-        for blk in self.blocks:
-            q = blk(q, kv, kv_mask=kv_mask)
+
+        attn_to_save = None
+        keep_to_save = None
+
+        # 将 attn_layer 归一化为正索引
+        L = len(self.blocks)
+        layer_idx = attn_layer if attn_layer >= 0 else (L + attn_layer)
+
+        for i, blk in enumerate(self.blocks):
+            want_attn = return_attn and (i == layer_idx)
+            want_dbg = return_debug and (i == layer_idx)
+
+            q, attn, keep_mask = blk(
+                q, kv, kv_mask=kv_mask,
+                return_attn=want_attn,
+                return_debug=want_dbg,
+            )
+            if want_attn:
+                attn_to_save = attn
+            if want_dbg:
+                keep_to_save = keep_mask
+
         q = self.norm_out(q)
-        return MEQOutput(z=q)
+
+        debug = None
+        if return_attn or return_debug:
+            debug = {
+                "attn": attn_to_save,        # (B,H,M,N) or None
+                "keep_mask": keep_to_save,   # (B,N) or None
+                "kv_splits": kv_splits,
+            }
+
+            # 如果有 splits，则按编码器聚合注意力（更适合论文图）
+            if attn_to_save is not None and kv_splits is not None:
+                # attn_to_save: (B,H,M,N)
+                enc_chunks = []
+                for name, s, e in kv_splits:
+                    enc_chunks.append(attn_to_save[..., s:e].sum(dim=-1, keepdim=True))  # (B,H,M,1)
+                debug["attn_enc"] = torch.cat(enc_chunks, dim=-1)  # (B,H,M,K)
+
+        return MEQOutput(z=q, debug=debug)

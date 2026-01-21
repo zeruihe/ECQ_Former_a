@@ -6,6 +6,10 @@
 
 并支持 “自适应去噪”：
 - 在 softmax 前基于 scores 生成 keep_mask，将被丢弃 token 的 score 置为 -inf
+
+Visualization support:
+- When need_weights=True, return per-head attn weights (B, H, M, N)
+- When adaptive_drop enabled, also return keep_mask (B, N) for debugging/visualization
 """
 
 from __future__ import annotations
@@ -44,6 +48,11 @@ class StandardCrossAttention(nn.Module):
     """
     baseline cross-attention（带参数）：
     内部包含 Q/K/V/O 投影矩阵，用于标准对比实验。
+    
+    Returns:
+      out: (B, M, D)
+      attn: (B, H, M, N) if need_weights else None
+      keep_mask: None (baseline has no adaptive drop)
     """
     def __init__(self, d_model: int, nhead: int, dropout: float = 0.0):
         super().__init__()
@@ -55,9 +64,20 @@ class StandardCrossAttention(nn.Module):
         kv: torch.Tensor,
         kv_mask: Optional[torch.Tensor] = None,
         need_weights: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        out, attn = self.mha(query=q, key=kv, value=kv, key_padding_mask=kv_mask, need_weights=need_weights)
-        return out, attn
+        return_debug: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        if need_weights:
+            # average_attn_weights=False => attn: (B, H, M, N)
+            out, attn = self.mha(
+                query=q, key=kv, value=kv,
+                key_padding_mask=kv_mask,
+                need_weights=True,
+                average_attn_weights=False,
+            )
+            return out, attn, None
+        out, _ = self.mha(query=q, key=kv, value=kv, key_padding_mask=kv_mask, need_weights=False)
+        return out, None, None
+
 
 
 @dataclass
@@ -92,7 +112,8 @@ class ParamFreeCrossAttention(nn.Module):
         kv: torch.Tensor,                # (B, N, D)
         kv_mask: Optional[torch.Tensor] = None,   # (B, N) True 表示 padding
         need_weights: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        return_debug: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         B, M, D = q.shape
         _, N, _ = kv.shape
 
@@ -115,6 +136,7 @@ class ParamFreeCrossAttention(nn.Module):
             scores = scores.masked_fill(kv_mask[:, None, None, :].to(torch.bool), float("-inf"))
 
         # 5) 自适应去噪：生成 keep_mask，并在 softmax 前把 drop token 置 -inf
+        keep_mask = None
         if self.cfg.adaptive_drop is not None and self.cfg.adaptive_drop.enabled and self.cfg.adaptive_drop.gamma > 0:
             keep_mask = build_adaptive_drop_mask(
                 scores=scores,
@@ -135,9 +157,11 @@ class ParamFreeCrossAttention(nn.Module):
         # 8) 合并多头
         out = out.transpose(1, 2).contiguous().view(B, M, D)  # (B,M,D)
 
+        # 返回结果
+        dbg_keep = keep_mask if (return_debug and keep_mask is not None) else None
         if need_weights:
-            return out, attn.mean(dim=1)  # (B,M,N)
-        return out, None
+            return out, attn, dbg_keep
+        return out, None, dbg_keep
 
 
 def build_cross_attention(

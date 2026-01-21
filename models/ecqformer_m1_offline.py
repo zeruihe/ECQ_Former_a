@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Optional
+from typing import List, Optional, Tuple, Dict, Any
 from PIL import Image
 
 import torch
@@ -108,6 +108,50 @@ class ECQFormerM1Offline(nn.Module):
             raise RuntimeError("enabled_encoders is empty: at least one vision encoder must be enabled")
         return torch.cat(xs, dim=1)
 
+    def encode_vision_with_splits(
+        self, images_pil: List[Image.Image], device: torch.device
+    ) -> Tuple[torch.Tensor, List[Tuple[str, int, int]]]:
+        """
+        编码视觉并返回 token 区间信息（用于注意力可视化）。
+        
+        Returns:
+            x_v: (B, N, D) 拼接后的视觉 token
+            kv_splits: [(encoder_name, start, end), ...] 每个编码器的 token 区间
+        """
+        xs = []
+        kv_splits = []
+        offset = 0
+        
+        # Fixed concat order: clip -> biomedclip -> dinov2
+        if "clip" in self.enabled_encoders:
+            vt = self.enc_clip(images_pil, device=device).tokens
+            vt_proj = self.proj_clip(vt)
+            xs.append(vt_proj)
+            n_tokens = vt_proj.size(1)
+            kv_splits.append(("clip", offset, offset + n_tokens))
+            offset += n_tokens
+            
+        if "biomedclip" in self.enabled_encoders:
+            vt = self.enc_bio(images_pil, device=device).tokens
+            vt_proj = self.proj_bio(vt)
+            xs.append(vt_proj)
+            n_tokens = vt_proj.size(1)
+            kv_splits.append(("biomedclip", offset, offset + n_tokens))
+            offset += n_tokens
+            
+        if "dinov2" in self.enabled_encoders:
+            vt = self.enc_dino(images_pil, device=device).tokens
+            vt_proj = self.proj_dino(vt)
+            xs.append(vt_proj)
+            n_tokens = vt_proj.size(1)
+            kv_splits.append(("dinov2", offset, offset + n_tokens))
+            offset += n_tokens
+            
+        if not xs:
+            raise RuntimeError("enabled_encoders is empty: at least one vision encoder must be enabled")
+            
+        return torch.cat(xs, dim=1), kv_splits
+
     def forward_caption_pretrain(
         self,
         *,
@@ -193,7 +237,7 @@ class ECQFormerM1Offline(nn.Module):
         if device is None:
             device = next(self.parameters()).device
 
-        soft = self.build_soft_prompt(images_pil, device=device)
+        soft, _ = self.build_soft_prompt(images_pil, device=device)
         prompts = [prompt_template.format(question=q) for q in questions]
         return self.lm.generate_with_soft_prompt(
             soft_prompt=soft,
@@ -209,15 +253,45 @@ class ECQFormerM1Offline(nn.Module):
         )
 
     @torch.inference_mode()
-    def build_soft_prompt(self, images_pil: List[Image.Image], device: torch.device) -> torch.Tensor:
+    def build_soft_prompt(
+        self,
+        images_pil: List[Image.Image],
+        device: torch.device,
+        *,
+        return_attn: bool = False,
+        return_debug: bool = False,
+        attn_layer: int = -1,
+    ) -> Tuple[torch.Tensor, Optional[Dict[str, Any]]]:
         """
         构建 soft prompt: image -> vision tokens -> MEQ resample -> project to LLM dim
-        Returns: (B, M, D_lm)
+        
+        Args:
+            return_attn: 返回 cross-attn 权重（用于可视化）
+            return_debug: 返回 keep_mask 等调试信息
+            attn_layer: 取哪一层的 attention（默认最后一层 -1）
+            
+        Returns:
+            soft: (B, M, D_lm) soft prompt
+            debug: dict with keys 'attn', 'keep_mask', 'kv_splits', 'attn_enc' (if requested)
         """
-        x_v = self.encode_vision(images_pil, device=device)
-        z = self.meq(x_v).z
+        x_v, kv_splits = self.encode_vision_with_splits(images_pil, device=device)
+        
+        meq_out = self.meq(
+            x_v,
+            return_attn=return_attn,
+            return_debug=return_debug,
+            kv_splits=kv_splits,
+            attn_layer=attn_layer,
+        )
+        z = meq_out.z
         soft = self.soft_proj(z)
-        return soft
+        
+        debug = meq_out.debug
+        if debug is not None:
+            # 确保 kv_splits 信息传递出去
+            debug["kv_splits"] = kv_splits
+            
+        return soft, debug
 
     @torch.inference_mode()
     def generate_caption(
@@ -238,7 +312,7 @@ class ECQFormerM1Offline(nn.Module):
         if device is None:
             device = next(self.parameters()).device
         
-        soft = self.build_soft_prompt(images_pil, device=device)
+        soft, _ = self.build_soft_prompt(images_pil, device=device)
         prompts = [prompt_prefix for _ in images_pil]
         
         return self.lm.generate_with_soft_prompt(
@@ -289,7 +363,7 @@ class ECQFormerM1Offline(nn.Module):
             torch.cuda.synchronize()
         t0 = time.time()
         
-        soft = self.build_soft_prompt(images_pil, device=device)
+        soft, _ = self.build_soft_prompt(images_pil, device=device)
         
         if device.type == "cuda":
             torch.cuda.synchronize()

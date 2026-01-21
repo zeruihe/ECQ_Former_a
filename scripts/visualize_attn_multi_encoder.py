@@ -52,10 +52,10 @@ def main():
     mcfg = cfg.get("models", cfg)  # 兼容你的 config 结构
 
     model = ECQFormerM1Offline(
-        llama_local_dir=mcfg["llama_local_dir"],
-        clip_local_dir=mcfg["clip_local_dir"],
-        dinov2_local_dir=mcfg["dinov2_local_dir"],
-        biomedclip_local_dir=mcfg["biomedclip_local_dir"],
+        llama_local_dir=mcfg.get("llama_local_dir", mcfg.get("llama_dir")),
+        clip_local_dir=mcfg.get("clip_local_dir", mcfg.get("clip_dir")),
+        dinov2_local_dir=mcfg.get("dinov2_local_dir", mcfg.get("dinov2_dir")),
+        biomedclip_local_dir=mcfg.get("biomedclip_local_dir", mcfg.get("biomedclip_dir")),
         d_bridge=int(mcfg.get("d_bridge", 768)),
         meq_layers=int(mcfg.get("meq_layers", 2)),
         meq_heads=int(mcfg.get("meq_heads", 12)),
@@ -135,3 +135,11 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+"""
+python scripts/visualize_attn_multi_encoder.py config/m2_cd.yaml \
+  --ckpt /root/autodl-tmp/outputs/xxx/checkpoints/final.pt \
+  --images /root/autodl-tmp/some_image1.jpg /root/autodl-tmp/some_image2.jpg \
+  --out-dir outputs/attn_viz_demo \
+  --attn-layer -1
+"""
