@@ -75,8 +75,12 @@ def main():
         torch_dtype=torch.bfloat16,
     ).to(device)
 
-    # load checkpoint
-    ckpt = torch.load(args.ckpt, map_location="cpu")
+    # load checkpoint (weights_only=False for PyTorch 2.6+ compatibility)
+    try:
+        ckpt = torch.load(args.ckpt, map_location="cpu", weights_only=False)
+    except TypeError:
+        # Older PyTorch versions don't have weights_only
+        ckpt = torch.load(args.ckpt, map_location="cpu")
     # 你的工程里通常是 trainable-only 存储；这里用 strict=False 更稳
     model.load_state_dict(ckpt.get("model", ckpt), strict=False)
     model.eval()
