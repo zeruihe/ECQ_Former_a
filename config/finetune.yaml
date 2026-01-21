@@ -2,8 +2,7 @@
 
 output:
   out_dir: "/root/autodl-tmp/outputs"
-  run_name: "m1_finetune_vqa-rad_clip_biomedclip_dinov2"
-
+  run_name: "m1_finetune_vqa-rad_cd
 models:
   # Offline cached model directories (already on your AutoDL disk)
   llama_dir: "/root/autodl-tmp/hf_models/TsinghuaC3I/Llama-3.1-8B-UltraMedical"
@@ -31,7 +30,7 @@ models:
     gamma: 0.2                   # {0,0.1,0.2,0.3,0.4}
     mode: topk                   # topk | sort
     post: no_softmax             # no_softmax | softmax
-    
+
 data:
   dataset_id: "flaviagiammarino/vqa-rad"   # or flaviagiammarino/vqa-rad, BoKelvin/SLAKE
   split: "train"                            # train / validation / test
@@ -52,7 +51,7 @@ train:
   fp16: false
 
   # Initialize from a pretrain checkpoint (trainable-only)
-  init_from: "/root/autodl-tmp/outputs/m1_pertrain_clip_biomedclip_dinov2/checkpoints"
+  init_from: "/root/autodl-tmp/outputs/m2_cd_pertrain/checkpoints"
 
   lr: 2.0e-5
   weight_decay: 0.0
