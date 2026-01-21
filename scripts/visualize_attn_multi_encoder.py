@@ -138,8 +138,8 @@ if __name__ == "__main__":
 
 """
 python scripts/visualize_attn_multi_encoder.py config/m2_cd.yaml \
-  --ckpt /root/autodl-tmp/outputs/xxx/checkpoints/final.pt \
-  --images /root/autodl-tmp/some_image1.jpg /root/autodl-tmp/some_image2.jpg \
+  --ckpt /path/to/your/checkpoint.pt \
+  --images /path/to/image1.jpg /path/to/image2.jpg \ 
   --out-dir outputs/attn_viz_demo \
   --attn-layer -1
 """
