@@ -139,7 +139,7 @@ def generate_vqa_with_timing(
     
     # Step 1: Vision encoding + Bridge (soft prompt)
     t_vision_start = time.perf_counter()
-    soft = model.build_soft_prompt(images_pil, device=device)
+    soft, _ = model.build_soft_prompt(images_pil, device=device)
     torch.cuda.synchronize() if device.type == "cuda" else None
     t_vision_end = time.perf_counter()
     vision_bridge_ms = (t_vision_end - t_vision_start) * 1000
