@@ -1,0 +1,99 @@
+# config/m3.yaml
+# M3：第二个创新点（编码器门控 + FiLM 查询调制）
+# 基于 m2_cd.yaml（第一个创新点）完整保留，追加 gating 和 film 配置
+
+models:
+  llama_dir: /root/autodl-tmp/hf_models/TsinghuaC3I/Llama-3.1-8B-UltraMedical
+  clip_dir: /root/autodl-tmp/hf_models/openai/clip-vit-large-patch14
+  dinov2_dir: /root/autodl-tmp/hf_models/facebook/dinov2-large
+  biomedclip_dir: /root/autodl-tmp/hf_models/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224
+
+  # Encoder ablation switch
+  enabled_encoders: [clip, biomedclip, dinov2]
+  auto_m_queries: true    # m_queries = 32 * len(enabled_encoders) = 96
+
+  # Bridge config
+  d_bridge: 768
+  meq_layers: 12
+  meq_heads: 12
+
+  # 第一个创新点：无参数注意力 + 自适应去噪（完整保留）
+  attn_type: param_free
+  phi: silu
+  score_scale: true
+  score_norm: false
+
+  adaptive_drop:
+    enabled: true
+    gamma: 0.2
+    mode: topk
+    post: no_softmax
+
+  # ──────────────────────────────────────────────────────────────────
+  # 第二个创新点 Part 1：文本引导编码器门控
+  # ──────────────────────────────────────────────────────────────────
+  gating:
+    enabled: true
+    mlp_ratio: 2              # 门控 MLP 隐层扩展比（hidden = d_bridge * mlp_ratio）
+    dropout: 0.1              # MLP 内部 dropout
+    encoder_drop_p: 0.1      # Encoder Dropout 触发概率（训练期防门控塌缩）
+
+  # ──────────────────────────────────────────────────────────────────
+  # 第二个创新点 Part 2：FiLM 文本驱动查询调制
+  # ──────────────────────────────────────────────────────────────────
+  film:
+    enabled: true
+    dropout: 0.1              # concat 投影层和 modulator 内部 dropout
+
+data:
+  dataset_id: "flaviagiammarino/vqa-rad"
+  split: "train"
+  cache_dir: "/root/autodl-tmp/datasets/vqa-rad"
+  local_dir: null
+  images_dir: null
+  language: "en"
+
+  batch_size: 2
+  num_workers: 0
+  pin_memory: true
+  shuffle: true
+  max_samples: null
+
+train:
+  seed: 42
+  bf16: true
+  fp16: false
+
+  # 从 M2 预训练 checkpoint 初始化（Stage 1 输出 → Stage 2 输入）
+  init_from: "/root/autodl-tmp/outputs/m3_pretrain/checkpoints"
+
+  lr: 2.0e-5
+  weight_decay: 0.0
+  grad_accum: 4
+
+  num_epochs: 5
+
+  max_length: 256
+  log_every: 10
+  save_every: 2000
+  keep_last_k: 3
+  save_latest: true
+  auto_resume: true
+  resume_from: null
+
+  prompt_template: "You are a helpful medical assistant. Answer the question based on the image.\nQuestion: {question}\nAnswer:"
+
+eval:
+  enabled: true
+  split: "test"
+  max_new_tokens: 10
+  num_beams: 3
+  temperature: 0.1
+  top_p: 0.9
+  no_repeat_ngram_size: 0
+  repetition_penalty: 1.0
+  early_stopping: false
+
+output:
+  out_dir: /root/autodl-tmp/outputs
+  run_name: m3_innovation2_vqa

@@ -204,3 +204,101 @@ class MEQFormer(nn.Module):
                 debug["attn_enc"] = torch.cat(enc_chunks, dim=-1)  # (B,H,M,K)
 
         return MEQOutput(z=q, debug=debug)
+
+
+# ─────────────────────────────────────────────────────────────
+# MEQFormerV2：在 MEQFormer 基础上支持 FiLM 查询调制
+# ─────────────────────────────────────────────────────────────
+
+class MEQFormerV2(MEQFormer):
+    """
+    MEQFormer 的文本条件版本（第二个创新点）。
+
+    在进入 block 循环前，若传入 text_vec，则调用 FiLMQueryModulator 对
+    可学习 Queries 进行残差式调制，为 cross-attn 赋予任务相关的检索方向。
+
+    完全向后兼容：text_vec=None 时与 MEQFormer 行为完全相同。
+
+    新增 Args:
+        film_modulator : FiLMQueryModulator 实例，由 ECQFormerM2 负责构建并传入
+    """
+
+    def __init__(
+        self,
+        d: int,
+        nhead: int,
+        num_layers: int,
+        m_queries: int,
+        dropout: float = 0.0,
+        *,
+        attn_type: str = "standard",
+        phi: str = "identity",
+        score_scale: bool = True,
+        score_norm: bool = False,
+        adaptive_drop=None,
+        film_modulator=None,   # FiLMQueryModulator | None
+    ):
+        super().__init__(
+            d=d, nhead=nhead, num_layers=num_layers, m_queries=m_queries,
+            dropout=dropout, attn_type=attn_type, phi=phi,
+            score_scale=score_scale, score_norm=score_norm,
+            adaptive_drop=adaptive_drop,
+        )
+        self.film_mod = film_modulator   # 可为 None（退化为 MEQFormer）
+
+    def forward(
+        self,
+        kv: torch.Tensor,
+        kv_mask: Optional[torch.Tensor] = None,
+        *,
+        text_vec: Optional[torch.Tensor] = None,   # (B, D_bridge)，新增
+        return_attn: bool = False,
+        return_debug: bool = False,
+        kv_splits: Optional[List[Tuple[str, int, int]]] = None,
+        attn_layer: int = -1,
+    ) -> MEQOutput:
+        """
+        新增参数：
+            text_vec : (B, D_bridge)，文本语义向量，若传入则对 queries 做 FiLM 调制
+        """
+        B = kv.size(0)
+        q = self.queries.unsqueeze(0).expand(B, -1, -1)   # (B, M, D)
+
+        # ── FiLM 查询调制（核心新增逻辑） ──
+        if self.film_mod is not None and text_vec is not None:
+            q = self.film_mod(q, text_vec)   # (B, M, D)
+
+        attn_to_save = None
+        keep_to_save = None
+        L = len(self.blocks)
+        layer_idx = attn_layer if attn_layer >= 0 else (L + attn_layer)
+
+        for i, blk in enumerate(self.blocks):
+            want_attn = return_attn and (i == layer_idx)
+            want_dbg  = return_debug and (i == layer_idx)
+            q, attn, keep_mask = blk(
+                q, kv, kv_mask=kv_mask,
+                return_attn=want_attn,
+                return_debug=want_dbg,
+            )
+            if want_attn:
+                attn_to_save = attn
+            if want_dbg:
+                keep_to_save = keep_mask
+
+        q = self.norm_out(q)
+
+        debug = None
+        if return_attn or return_debug:
+            debug = {
+                "attn": attn_to_save,
+                "keep_mask": keep_to_save,
+                "kv_splits": kv_splits,
+            }
+            if attn_to_save is not None and kv_splits is not None:
+                enc_chunks = []
+                for name, s, e in kv_splits:
+                    enc_chunks.append(attn_to_save[..., s:e].sum(dim=-1, keepdim=True))
+                debug["attn_enc"] = torch.cat(enc_chunks, dim=-1)
+
+        return MEQOutput(z=q, debug=debug)
