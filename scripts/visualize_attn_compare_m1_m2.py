@@ -314,6 +314,22 @@ def plot_spatial_compare(
 # main
 # ─────────────────────────────────────────────────────────────
 
+
+def _debug_to_cpu(debug: dict | None) -> dict | None:
+    """将 debug 中所有 Tensor 移到 CPU（释放 GPU 显存以便加载第二个模型）。"""
+    if debug is None:
+        return None
+    result = {}
+    for k, v in debug.items():
+        if isinstance(v, torch.Tensor):
+            result[k] = v.cpu()
+        elif isinstance(v, list) and v and isinstance(v[0], torch.Tensor):
+            result[k] = [t.cpu() for t in v]
+        else:
+            result[k] = v
+    return result
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config_m1", required=True, help="M1 config yaml (e.g. config/m2_cd.yaml)")
@@ -336,20 +352,41 @@ def main():
     print(f"[image] {args.image}  size={image_pil.size}")
     print(f"[question] {args.question}")
 
-    # 加载双模型
+    # ──────────────────────────────────────────────────────────
+    # Stage A：加载 M1 → 推理 → 将结果移到 CPU → 销毁释放显存
+    # ──────────────────────────────────────────────────────────
     print("\n[load] M1 model...")
-    m1, _ = load_m1(args.config_m1, args.ckpt_m1, device)
-    print("[load] M2 model...")
-    m2, cfg_m2 = load_m2(args.config_m2, args.ckpt_m2, device)
+    m1, cfg_m1 = load_m1(args.config_m1, args.ckpt_m1, device)
+    enabled_encoders_m1 = _get_enabled_encoders(cfg_m1["models"])
 
+    print("[infer] M1 attention...")
+    debug_m1 = extract_attn_m1(m1, image_pil, device)
+    debug_m1 = _debug_to_cpu(debug_m1)   # 立即移到 CPU
+
+    # 释放 M1 显存
+    del m1
+    torch.cuda.empty_cache()
+    if device.type == "cuda":
+        mem_free = torch.cuda.mem_get_info()[0] / (1024 ** 3)
+        print(f"[mem] M1 released. Free GPU: {mem_free:.2f} GB")
+
+    # ──────────────────────────────────────────────────────────
+    # Stage B：加载 M2 → 推理 → 将结果移到 CPU → 销毁释放显存
+    # ──────────────────────────────────────────────────────────
+    print("\n[load] M2 model...")
+    m2, cfg_m2 = load_m2(args.config_m2, args.ckpt_m2, device)
     enabled_encoders = _get_enabled_encoders(cfg_m2["models"])
 
-    # 推理
-    print("\n[infer] M1 attention...")
-    debug_m1 = extract_attn_m1(m1, image_pil, device)
     print("[infer] M2 attention...")
     debug_m2 = extract_attn_m2(m2, image_pil, args.question, device)
+    debug_m2 = _debug_to_cpu(debug_m2)
 
+    del m2
+    torch.cuda.empty_cache()
+
+    # ──────────────────────────────────────────────────────────
+    # Stage C：绘图（纯 CPU，无显存压力）
+    # ──────────────────────────────────────────────────────────
     os.makedirs(args.out_dir, exist_ok=True)
 
     # 1：encoder-level 并排对比
