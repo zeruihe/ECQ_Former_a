@@ -124,6 +124,13 @@ def load_clip_model(cfg_path: str, ckpt_path: Optional[str], device: torch.devic
         cfg = yaml.safe_load(f)
     m = cfg["models"]
     amp = torch.bfloat16 if cfg["train"].get("bf16", True) else torch.float16
+
+    # 强制单路：m_queries 以 ["clip"] 单编码器计算（32×1=32），不继承 config 三路值
+    clip_only_encs = ["clip"]
+    m_queries_clip = (32 * len(clip_only_encs)
+                      if m.get("auto_m_queries", True)
+                      else int(m["m_queries"]))
+
     model = ECQFormerM1Offline(
         llama_local_dir      = m["llama_dir"],
         clip_local_dir       = m["clip_dir"],
@@ -132,13 +139,13 @@ def load_clip_model(cfg_path: str, ckpt_path: Optional[str], device: torch.devic
         d_bridge             = int(m["d_bridge"]),
         meq_layers           = int(m["meq_layers"]),
         meq_heads            = int(m["meq_heads"]),
-        m_queries            = _auto_m_queries(m),
+        m_queries            = m_queries_clip,   # 32，与单路 ckpt 对齐
         attn_type            = m.get("attn_type", "param_free"),
         phi                  = m.get("phi", "silu"),
         score_scale          = bool(m.get("score_scale", True)),
         score_norm           = bool(m.get("score_norm", False)),
         adaptive_drop        = m.get("adaptive_drop", None),
-        enabled_encoders     = ["clip"],   # 强制单路
+        enabled_encoders     = clip_only_encs,
         torch_dtype          = amp,
     ).to(device)
     if ckpt_path:
@@ -147,6 +154,7 @@ def load_clip_model(cfg_path: str, ckpt_path: Optional[str], device: torch.devic
         print("  [ckpt] no checkpoint (random init)")
     model.eval()
     return model
+
 
 def load_m2_model(cfg_path: str, ckpt_path: Optional[str], device: torch.device):
     """加载 M2 完整模型（ECQFormerM2Offline）。"""
