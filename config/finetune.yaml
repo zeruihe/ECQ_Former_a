@@ -57,7 +57,7 @@ train:
   weight_decay: 0.0
   grad_accum: 4
   
-  # Epoch-based training (recommended) 
+  # Epoch-based training (recommended)
   # num_epochs takes priority over max_steps
   # Finetune: typically 3-10 epochs
   num_epochs: 5
